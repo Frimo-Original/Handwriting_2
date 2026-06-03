@@ -1,0 +1,68 @@
+[run]
+name = "cpu_smoke"
+seed = 123
+out_dir = "runs/cpu_smoke"
+
+[hardware]
+device = "cpu"
+num_workers = 0
+pin_memory = false
+amp = false
+torch_compile = false
+
+[data]
+dataset_npz = "dataset/all_trajectories.npz"
+val_fraction = 0.10
+split_seed = 123
+resample_spacing = 3.0
+smooth_window = 1
+max_points = 768
+max_text_len = 96
+batch_size = 2
+augment = false
+
+[autoencoder]
+hidden_dim = 32
+latent_dim = 16
+downsample_factor = 4
+bottleneck_layers = 1
+n_heads = 2
+dropout = 0.0
+learning_rate = 0.001
+weight_decay = 0.0
+epochs = 1
+grad_accum_steps = 1
+max_grad_norm = 1.0
+kl_weight = 0.0001
+pen_weight = 0.35
+curvature_weight = 0.02
+render_weight = 0.0
+checkpoint_every = 1
+
+[generator]
+hidden_dim = 48
+text_dim = 48
+layers = 2
+n_heads = 2
+dropout = 0.0
+learning_rate = 0.001
+weight_decay = 0.0
+epochs = 1
+grad_accum_steps = 1
+max_grad_norm = 1.0
+length_loss_weight = 0.05
+checkpoint_every = 1
+flow_steps = 4
+temperature = 1.0
+
+[recognizer]
+hidden_dim = 48
+layers = 1
+dropout = 0.0
+learning_rate = 0.001
+weight_decay = 0.0
+epochs = 1
+grad_accum_steps = 1
+max_grad_norm = 1.0
+checkpoint_every = 1
+

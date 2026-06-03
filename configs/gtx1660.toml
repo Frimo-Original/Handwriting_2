@@ -1,0 +1,71 @@
+[run]
+name = "gtx1660"
+seed = 42
+out_dir = "runs/gtx1660"
+
+[hardware]
+device = "auto"
+num_workers = 2
+pin_memory = true
+amp = true
+torch_compile = false
+matmul_precision = "high"
+
+[data]
+dataset_npz = "dataset/all_trajectories.npz"
+val_fraction = 0.10
+split_seed = 42
+resample_spacing = 1.25
+smooth_window = 3
+max_points = 4096
+max_text_len = 96
+batch_size = 2
+augment = true
+jitter_std = 0.015
+scale_jitter = 0.04
+
+[autoencoder]
+hidden_dim = 128
+latent_dim = 64
+downsample_factor = 8
+bottleneck_layers = 2
+n_heads = 4
+dropout = 0.10
+learning_rate = 0.0003
+weight_decay = 0.00001
+epochs = 120
+grad_accum_steps = 8
+max_grad_norm = 1.0
+kl_weight = 0.0002
+pen_weight = 0.35
+curvature_weight = 0.05
+render_weight = 0.0
+checkpoint_every = 5
+
+[generator]
+hidden_dim = 192
+text_dim = 192
+layers = 6
+n_heads = 6
+dropout = 0.10
+learning_rate = 0.0002
+weight_decay = 0.00001
+epochs = 180
+grad_accum_steps = 8
+max_grad_norm = 1.0
+length_loss_weight = 0.08
+checkpoint_every = 5
+flow_steps = 32
+temperature = 0.85
+
+[recognizer]
+hidden_dim = 160
+layers = 2
+dropout = 0.10
+learning_rate = 0.0004
+weight_decay = 0.00001
+epochs = 80
+grad_accum_steps = 4
+max_grad_norm = 1.0
+checkpoint_every = 5
+
