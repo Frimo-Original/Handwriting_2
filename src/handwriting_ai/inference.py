@@ -11,6 +11,7 @@ from handwriting_ai.data.codec import PAD_ID, encode_text
 from handwriting_ai.data.dataset import NormalizationStats
 from handwriting_ai.data.rendering import render_points_to_image
 from handwriting_ai.data.transforms import deltas_to_points
+from handwriting_ai.latent_stats import LatentNormalizationStats, denormalize_latents
 from handwriting_ai.models import InkAutoencoder, LatentFlowTransformer
 
 
@@ -22,12 +23,12 @@ def _load_autoencoder(path: str | Path, device: torch.device) -> tuple[InkAutoen
     return model, NormalizationStats.from_dict(payload["normalization"])
 
 
-def _load_generator(path: str | Path, device: torch.device) -> LatentFlowTransformer:
+def _load_generator(path: str | Path, device: torch.device) -> tuple[LatentFlowTransformer, LatentNormalizationStats | None]:
     payload = load_checkpoint(path, map_location=device)
     model = LatentFlowTransformer(**payload["model_kwargs"]).to(device)
     model.load_state_dict(payload["model_state"])
     model.eval()
-    return model
+    return model, LatentNormalizationStats.from_dict(payload.get("latent_normalization"))
 
 
 def generate_points(
@@ -43,7 +44,7 @@ def generate_points(
     pen_threshold: float = 0.5,
 ) -> np.ndarray:
     autoencoder, stats = _load_autoencoder(autoencoder_checkpoint, device)
-    generator = _load_generator(generator_checkpoint, device)
+    generator, latent_stats = _load_generator(generator_checkpoint, device)
     encoded = torch.tensor([encode_text(text)], dtype=torch.long, device=device)
     text_mask = encoded != PAD_ID
     with torch.no_grad():
@@ -55,6 +56,8 @@ def generate_points(
             temperature=temperature,
             max_latent_length=max_latent_length,
         )
+        if latent_stats is not None:
+            latents = denormalize_latents(latents, latent_stats) * latent_mask.unsqueeze(-1)
         decoded = autoencoder.decode(latents, target_length=latent_mask.shape[1] * autoencoder.downsample_factor)
         deltas = decoded[0].detach().cpu().float().numpy()
     deltas[:, 2] = (1.0 / (1.0 + np.exp(-deltas[:, 2])) > pen_threshold).astype(np.float32)
@@ -74,4 +77,3 @@ def save_points_png(path: str | Path, points: np.ndarray) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     render_points_to_image(points).save(output)
-

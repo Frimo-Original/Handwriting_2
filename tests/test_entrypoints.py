@@ -8,6 +8,7 @@ from _bootstrap import bootstrap
 bootstrap()
 
 import main_generate
+import main_evaluate
 import main_training
 
 
@@ -22,7 +23,11 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(out_json, Path("outputs/sample.json"))
         self.assertEqual(out_png, Path("outputs/sample.png"))
 
+    def test_evaluate_parser_defaults_to_all(self) -> None:
+        args = main_evaluate.build_parser().parse_args([])
+        self.assertEqual(args.profile, "gtx1660")
+        self.assertEqual(args.stage, "all")
+
 
 if __name__ == "__main__":
     unittest.main()
-

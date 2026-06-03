@@ -9,6 +9,7 @@ from handwriting_ai.checkpoint import load_checkpoint, save_checkpoint
 from handwriting_ai.config import ExperimentConfig
 from handwriting_ai.data import NormalizationStats, build_dataloaders
 from handwriting_ai.data.codec import VOCAB_TOKENS
+from handwriting_ai.latent_stats import LatentNormalizationStats, normalize_latents
 from handwriting_ai.models import InkAutoencoder, LatentFlowTransformer
 from handwriting_ai.seed import resolve_device, seed_everything
 from handwriting_ai.training.common import (
@@ -34,6 +35,37 @@ def _flow_kwargs(config: ExperimentConfig, latent_dim: int) -> dict[str, int | f
     }
 
 
+@torch.no_grad()
+def compute_latent_normalization(
+    autoencoder: InkAutoencoder,
+    loader,
+    device: torch.device,
+) -> LatentNormalizationStats:
+    autoencoder.eval()
+    latent_dim = autoencoder.latent_dim
+    total = torch.zeros(latent_dim, device=device, dtype=torch.float64)
+    total_sq = torch.zeros(latent_dim, device=device, dtype=torch.float64)
+    count = torch.zeros((), device=device, dtype=torch.float64)
+    for batch in tqdm(loader, desc="Latent stats", leave=False):
+        batch = batch.to(device)
+        latents, _, _, latent_mask, _ = autoencoder.encode(
+            batch.points,
+            batch.point_lengths,
+            sample=False,
+        )
+        valid = latents[latent_mask].double()
+        total += valid.sum(dim=0)
+        total_sq += (valid * valid).sum(dim=0)
+        count += valid.shape[0]
+    mean = total / count.clamp(min=1.0)
+    variance = (total_sq / count.clamp(min=1.0) - mean * mean).clamp(min=1e-6)
+    std = torch.sqrt(variance)
+    return LatentNormalizationStats(
+        mean=[float(v) for v in mean.cpu()],
+        std=[float(v) for v in std.cpu()],
+    )
+
+
 def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path) -> Path:
     seed_everything(config.run.seed)
     configure_torch(config)
@@ -49,6 +81,7 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
     for parameter in autoencoder.parameters():
         parameter.requires_grad_(False)
 
+    latent_stats = compute_latent_normalization(autoencoder, train_loader, device)
     run_dir = config.run.out_dir / "generator"
     run_dir.mkdir(parents=True, exist_ok=True)
     write_json(run_dir / "config.json", config)
@@ -80,6 +113,7 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
                     batch.point_lengths,
                     sample=False,
                 )
+                latents = normalize_latents(latents, latent_stats) * latent_mask.unsqueeze(-1)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
                 loss, metrics = flow_matching_loss(
                     model,
@@ -101,7 +135,7 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
             metrics_list.append(metrics)
             progress.set_postfix(loss=f"{metrics['loss']:.4f}")
 
-        val_metrics = evaluate_generator(model, autoencoder, val_loader, config, device)
+        val_metrics = evaluate_generator(model, autoencoder, val_loader, config, device, latent_stats)
         train_avg = average_metric_dicts(metrics_list)
         print(
             f"Flow epoch {epoch}: train_loss={train_avg['loss']:.4f} "
@@ -115,6 +149,7 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
             "model_kwargs": _flow_kwargs(config, autoencoder.latent_dim),
             "autoencoder_checkpoint": str(autoencoder_checkpoint),
             "normalization": stats.to_dict(),
+            "latent_normalization": latent_stats.to_dict(),
             "vocab_tokens": VOCAB_TOKENS,
             "config": to_plain(config),
             "val_metrics": val_metrics,
@@ -136,6 +171,7 @@ def evaluate_generator(
     loader,
     config: ExperimentConfig,
     device: torch.device,
+    latent_stats: LatentNormalizationStats | None = None,
 ) -> dict[str, float]:
     model.eval()
     metrics_list: list[dict[str, float]] = []
@@ -146,6 +182,8 @@ def evaluate_generator(
             batch.point_lengths,
             sample=False,
         )
+        if latent_stats is not None:
+            latents = normalize_latents(latents, latent_stats) * latent_mask.unsqueeze(-1)
         _, metrics = flow_matching_loss(
             model,
             latents,

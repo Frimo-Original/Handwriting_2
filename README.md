@@ -36,6 +36,7 @@
 
 - `main_training.py` - удобный запуск обучения.
 - `main_generate.py` - удобная генерация тестовых примеров.
+- `main_evaluate.py` - визуальные проверки между этапами обучения.
 - `configs/gtx1660.toml` - основной профиль под Ryzen 5 2600, GTX 1660 и 16 GB RAM.
 - `configs/cpu_smoke.toml` - очень маленький профиль для быстрой проверки кода.
 - `src/handwriting_ai/` - основной пакет.
@@ -55,6 +56,7 @@
 ```bash
 .venv/bin/python main_training.py --profile cpu_smoke --stage all
 .venv/bin/python main_generate.py --profile cpu_smoke "Тестовая строка." --steps 2 --latent-length 8
+.venv/bin/python main_evaluate.py --profile cpu_smoke --stage all --count 2
 ```
 
 После этого в `outputs/generated/` появятся `.json` и `.png`.
@@ -67,16 +69,48 @@
 .venv/bin/python main_training.py --stage autoencoder
 ```
 
+После этого обязательно проверить реконструкции:
+
+```bash
+.venv/bin/python main_evaluate.py --stage autoencoder --split val --count 8
+```
+
+Открой картинки в `outputs/eval/autoencoder/`. Реконструкция должна быть
+похожа на оригинал почти до уровня отдельных букв. Если она превращает буквы в
+палочки или ломает соединения, генератор дальше не спасёт ситуацию.
+
 Когда появится `runs/gtx1660/autoencoder/best.pt`, можно обучать генератор:
 
 ```bash
 .venv/bin/python main_training.py --stage generator
 ```
 
+После генератора проверить хотя бы train и val:
+
+```bash
+.venv/bin/python main_evaluate.py --stage generator --split train --count 8
+.venv/bin/python main_evaluate.py --stage generator --split val --count 8
+```
+
+По умолчанию `main_evaluate.py` для генератора берёт длину latent-последовательности
+из реального примера. Это упрощает диагностику: если даже при правильной длине
+строка нечитаемая, значит генератор не научился соответствию `текст -> латенты`.
+Позже можно проверить предсказание длины отдельно:
+
+```bash
+.venv/bin/python main_evaluate.py --stage generator --split val --count 8 --use-predicted-length
+```
+
 Распознаватель обучается отдельно:
 
 ```bash
 .venv/bin/python main_training.py --stage recognizer
+```
+
+Проверить его метрики:
+
+```bash
+.venv/bin/python main_evaluate.py --stage recognizer
 ```
 
 Если нужно запустить всё подряд:
@@ -149,6 +183,49 @@
 4. Сгенерированный `.json` должен рендериться без резких скачков и странных
    подъёмов пера.
 
+Минимальный чек-лист между этапами:
+
+```bash
+# 1. Датасет и preprocessing
+.venv/bin/python main_training.py --stage audit
+
+# 2. После autoencoder
+.venv/bin/python main_evaluate.py --stage autoencoder --split val --count 8
+
+# 3. После generator: сначала train, потом val
+.venv/bin/python main_evaluate.py --stage generator --split train --count 8
+.venv/bin/python main_evaluate.py --stage generator --split val --count 8
+
+# 4. После recognizer
+.venv/bin/python main_evaluate.py --stage recognizer
+```
+
+## Если генерация нечитаемая
+
+Сначала определить, где именно проблема.
+
+1. Если `autoencoder` плохо восстанавливает реальные строки, нужно улучшать
+   автоэнкодер: больше latent-размер, меньше downsample, дольше обучение или
+   меньше `kl_weight`.
+
+2. Если `autoencoder` хороший, но `generator` плохо пишет даже `--split train`,
+   значит генератор не научился попадать в latent-пространство.
+
+3. Если `generator` пишет train, но плохо пишет val, проблема уже в
+   обобщении: нужно больше данных, лучше покрытие буквосочетаний и аккуратнее
+   регуляризация.
+
+В текущей версии генератор обучается с нормализацией latent-пространства
+автоэнкодера. Если генератор был обучен старой версией без этой нормализации,
+его нужно переобучить:
+
+```bash
+.venv/bin/python main_training.py --stage generator
+```
+
+Автоэнкодер при этом можно не переобучать, если его реконструкции выглядят
+достаточно хорошо.
+
 Для проверки датасета:
 
 ```bash
@@ -170,4 +247,3 @@
 PYTHONPATH=src .venv/bin/python -m handwriting_ai audit-data --config configs/gtx1660.toml
 PYTHONPATH=src .venv/bin/python -m handwriting_ai render --json-path outputs/generated/sample.json --out outputs/generated/sample.png
 ```
-
