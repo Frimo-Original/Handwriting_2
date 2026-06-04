@@ -307,9 +307,10 @@ python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret
 
 - `best.pt`;
 - `last.pt`;
-- `epoch_*.pt`.
+- `epoch_*.pt`;
+- `config.json`.
 
-Если нужны только `best.pt` и `last.pt`, без промежуточных эпох:
+Если нужны только `best.pt`, `last.pt` и `config.json`, без промежуточных эпох:
 
 ```bash
 python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --best-last-only
@@ -321,10 +322,10 @@ python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --
 python main_sync.py push --remote http://192.168.1.20:8765 --token my_secret
 ```
 
-Если нужно также передавать `config.json` из папок обучения:
+Если по какой-то причине конфиги передавать не нужно:
 
 ```bash
-python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --include-configs
+python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --no-configs
 ```
 
 Если папка эпох нестандартная, можно явно указать её на обоих ПК:
@@ -340,12 +341,14 @@ python main_sync.py watch --epochs-dir /Users/frimo/Documents/PycharmProjects/Ha
 В логе передачи видно, что именно произошло:
 
 ```text
-Scan 14:25:03: /.../runs | files=2 | mode=best/last only
+Scan 14:25:03: /.../runs | files=3 | mode=best/last only | configs=yes
+FILE gtx1660/generator/config.json | 1.8 KB
+UP   gtx1660/generator/config.json | 1.8 KB | 0.01s | 0.17 MB/s
 FILE gtx1660/generator/best.pt | 63.0 MB
 UP   gtx1660/generator/best.pt | 63.0 MB | 4.21s | 14.96 MB/s
 FILE gtx1660/generator/last.pt | 63.0 MB
 SKIP gtx1660/generator/last.pt | 63.0 MB | already on receiver
-Done. uploaded=1, skipped=1, found=2, sent=63.0 MB, elapsed=4.25s, avg=14.82 MB/s
+Done. uploaded=2, skipped=1, found=3, sent=63.0 MB, elapsed=4.26s, avg=14.79 MB/s
 ```
 
 `UP` означает, что файл передан. `SKIP` означает, что такой же файл уже есть

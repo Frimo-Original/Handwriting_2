@@ -70,6 +70,15 @@ class SyncTests(unittest.TestCase):
             )
             self.assertEqual({path.name for path in best_last}, {"best.pt", "last.pt", "config.json"})
 
+    def test_sender_parser_includes_configs_by_default(self) -> None:
+        parser = main_sync.build_parser()
+
+        args = parser.parse_args(["push", "--remote", "http://127.0.0.1:8765"])
+        self.assertTrue(args.include_configs)
+
+        args = parser.parse_args(["push", "--remote", "http://127.0.0.1:8765", "--no-configs"])
+        self.assertFalse(args.include_configs)
+
     def test_upload_file_to_local_server(self) -> None:
         with tempfile.TemporaryDirectory() as src_tmp, tempfile.TemporaryDirectory() as dst_tmp:
             src = Path(src_tmp)

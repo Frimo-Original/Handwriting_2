@@ -326,7 +326,8 @@ def run_push_once(args: argparse.Namespace) -> tuple[int, int]:
     started = time.perf_counter()
     print(
         f"Scan {time.strftime('%H:%M:%S')}: {epochs_dir} | files={len(files)} | "
-        f"mode={'best/last only' if args.best_last_only else 'all epochs'}",
+        f"mode={'best/last only' if args.best_last_only else 'all epochs'} | "
+        f"configs={'yes' if args.include_configs else 'no'}",
         flush=True,
     )
     for path in files:
@@ -397,8 +398,16 @@ def add_sender_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--include-configs",
+        dest="include_configs",
         action="store_true",
-        help="Also send config.json files from the epochs directory.",
+        default=True,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--no-configs",
+        dest="include_configs",
+        action="store_false",
+        help="Do not send config.json files from training run directories.",
     )
 
 
