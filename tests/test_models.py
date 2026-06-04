@@ -12,6 +12,7 @@ bootstrap()
 
 from handwriting_ai.checkpoint import save_checkpoint
 from handwriting_ai.data.codec import VOCAB_TOKENS
+from handwriting_ai.latent_stats import LatentNormalizationStats
 from handwriting_ai.inference import generate_points
 from handwriting_ai.models import (
     InkAutoencoder,
@@ -95,6 +96,20 @@ class ModelTests(unittest.TestCase):
         latent_mask = torch.arange(12).unsqueeze(0) < latent_lengths.unsqueeze(1)
         text = torch.tensor([[10, 11, 12, 89], [13, 14, 89, 90]], dtype=torch.long)
         text_mask = text != 90
+        autoencoder = InkAutoencoder(
+            hidden_dim=32,
+            latent_dim=16,
+            downsample_factor=4,
+            bottleneck_layers=0,
+            n_heads=1,
+            dropout=0.0,
+        )
+        for parameter in autoencoder.parameters():
+            parameter.requires_grad_(False)
+        target_points = torch.randn(2, 48, 3)
+        target_points[..., 2] = (target_points[..., 2] > 0).float()
+        point_lengths = latent_lengths * autoencoder.downsample_factor
+        point_mask = torch.arange(48).unsqueeze(0) < point_lengths.unsqueeze(1)
         loss, metrics = latent_regression_loss(
             model,
             latents,
@@ -103,9 +118,20 @@ class ModelTests(unittest.TestCase):
             text,
             text_mask,
             length_loss_weight=0.1,
+            autoencoder=autoencoder,
+            latent_normalization=LatentNormalizationStats(mean=[0.0] * 16, std=[1.0] * 16),
+            target_points=target_points,
+            point_mask=point_mask,
+            latent_loss_weight=0.25,
+            latent_std_weight=0.1,
+            decoded_xy_weight=1.0,
+            decoded_pen_weight=0.5,
+            decoded_curvature_weight=0.1,
         )
         loss.backward()
         self.assertIn("latent", metrics)
+        self.assertIn("decoded_xy", metrics)
+        self.assertIn("latent_std", metrics)
         sampled, sampled_mask = model.sample(text, text_mask, latent_length=7)
         self.assertEqual(sampled.shape, (2, 7, 16))
         self.assertEqual(sampled_mask.shape, (2, 7))

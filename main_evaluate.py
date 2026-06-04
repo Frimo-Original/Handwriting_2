@@ -20,6 +20,7 @@ from handwriting_ai.data.codec import decode_tokens
 from handwriting_ai.data.dataset import NormalizationStats, build_datasets
 from handwriting_ai.data.rendering import render_points_to_image
 from handwriting_ai.data.transforms import deltas_to_points
+from handwriting_ai.generator_checkpoint import generator_checkpoint_problem, is_current_generator_payload
 from handwriting_ai.inference import generate_points
 from handwriting_ai.models import InkAutoencoder
 from handwriting_ai.seed import resolve_device
@@ -55,6 +56,17 @@ def require_checkpoint(path: Path, *, purpose: str) -> Path:
     return path
 
 
+def require_current_generator_checkpoint(path: Path) -> None:
+    payload = load_checkpoint(path, map_location="cpu")
+    if is_current_generator_payload(payload):
+        return
+    raise ValueError(
+        f"Generator checkpoint is outdated or unsupported: {path}\n"
+        f"Reason: {generator_checkpoint_problem(payload)}\n"
+        "Retrain the generator with: python main_training.py --stage generator"
+    )
+
+
 def load_autoencoder(path: Path, device: torch.device) -> tuple[InkAutoencoder, NormalizationStats]:
     payload = load_checkpoint(path, map_location=device)
     model = InkAutoencoder(**payload["model_kwargs"]).to(device)
@@ -73,7 +85,7 @@ def evaluate_autoencoder(args: argparse.Namespace, config: ExperimentConfig, dev
     checkpoint = Path(args.autoencoder_checkpoint).expanduser() if args.autoencoder_checkpoint else default_autoencoder_checkpoint(config)
     require_checkpoint(checkpoint, purpose="Autoencoder")
     model, stats = load_autoencoder(checkpoint, device)
-    out_dir = Path(args.out_dir) / "autoencoder"
+    out_dir = Path(args.out_dir) / args.split / "autoencoder"
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Autoencoder checkpoint: {checkpoint}")
 
@@ -98,8 +110,9 @@ def evaluate_generator(args: argparse.Namespace, config: ExperimentConfig, devic
     generator_checkpoint = Path(args.generator_checkpoint).expanduser() if args.generator_checkpoint else default_generator_checkpoint(config)
     require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
     require_checkpoint(generator_checkpoint, purpose="Generator")
+    require_current_generator_checkpoint(generator_checkpoint)
     _, stats = load_autoencoder(autoencoder_checkpoint, device)
-    out_dir = Path(args.out_dir) / "generator"
+    out_dir = Path(args.out_dir) / args.split / "generator"
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Autoencoder checkpoint: {autoencoder_checkpoint}")
     print(f"Generator checkpoint:   {generator_checkpoint}")
@@ -184,10 +197,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         run(args)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         parser.exit(2, f"{exc}\n")
 
 
 if __name__ == "__main__":
     main()
-

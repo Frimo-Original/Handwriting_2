@@ -13,6 +13,7 @@ if str(SRC_DIR) not in sys.path:
 from handwriting_ai.config import ExperimentConfig, load_config
 from handwriting_ai.checkpoint import load_checkpoint
 from handwriting_ai.data.dataset import dataset_summary
+from handwriting_ai.generator_checkpoint import is_current_generator_payload
 from handwriting_ai.training.autoencoder import train_autoencoder
 from handwriting_ai.training.generator import train_generator
 from handwriting_ai.training.recognizer import train_recognizer
@@ -72,7 +73,7 @@ def is_current_generator_checkpoint(path: Path) -> bool:
         payload = load_checkpoint(path, map_location="cpu")
     except Exception:
         return False
-    return payload.get("model_type") == "latent_regressor" and "latent_normalization" in payload
+    return is_current_generator_payload(payload)
 
 
 def run_training(args: argparse.Namespace) -> None:

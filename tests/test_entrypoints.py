@@ -9,6 +9,7 @@ from _bootstrap import bootstrap
 bootstrap()
 
 from handwriting_ai.checkpoint import save_checkpoint
+from handwriting_ai.generator_checkpoint import CURRENT_GENERATOR_TRAINING_VERSION
 import main_generate
 import main_evaluate
 import main_training
@@ -40,7 +41,34 @@ class EntrypointTests(unittest.TestCase):
                 model_type="latent_regressor",
                 latent_normalization={"mean": [0.0], "std": [1.0]},
             )
+            self.assertFalse(main_training.is_current_generator_checkpoint(path))
+            save_checkpoint(
+                path,
+                model_type="latent_regressor",
+                latent_normalization={"mean": [0.0], "std": [1.0]},
+                generator_training_version=CURRENT_GENERATOR_TRAINING_VERSION,
+            )
             self.assertTrue(main_training.is_current_generator_checkpoint(path))
+
+    def test_generate_rejects_old_latent_regressor_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "generator.pt"
+            save_checkpoint(
+                path,
+                model_type="latent_regressor",
+                latent_normalization={"mean": [0.0], "std": [1.0]},
+            )
+
+            with self.assertRaisesRegex(ValueError, "outdated"):
+                main_generate.validate_generator_checkpoint(path, allow_legacy_flow=False)
+
+            save_checkpoint(
+                path,
+                model_type="latent_regressor",
+                latent_normalization={"mean": [0.0], "std": [1.0]},
+                generator_training_version=CURRENT_GENERATOR_TRAINING_VERSION,
+            )
+            main_generate.validate_generator_checkpoint(path, allow_legacy_flow=False)
 
 
 if __name__ == "__main__":

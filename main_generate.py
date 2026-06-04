@@ -14,6 +14,7 @@ if str(SRC_DIR) not in sys.path:
 
 from handwriting_ai.config import ExperimentConfig, load_config
 from handwriting_ai.checkpoint import load_checkpoint
+from handwriting_ai.generator_checkpoint import generator_checkpoint_problem, is_current_generator_payload
 from handwriting_ai.inference import generate_points, save_points_json, save_points_png
 from handwriting_ai.seed import resolve_device
 
@@ -67,13 +68,14 @@ def require_checkpoint(path: Path, *, purpose: str) -> Path:
 def validate_generator_checkpoint(path: Path, *, allow_legacy_flow: bool) -> None:
     payload = load_checkpoint(path, map_location="cpu")
     model_type = payload.get("model_type", "latent_flow")
-    if model_type == "latent_regressor":
+    if is_current_generator_payload(payload):
         return
     if allow_legacy_flow and model_type == "latent_flow":
         print(f"Warning: using legacy flow generator checkpoint: {path}")
         return
     raise ValueError(
-        f"Generator checkpoint is legacy or unsupported: {path}\n"
+        f"Generator checkpoint is outdated or unsupported: {path}\n"
+        f"Reason: {generator_checkpoint_problem(payload)}\n"
         "Retrain the generator with: python main_training.py --stage generator\n"
         "If you explicitly want to inspect the old flow checkpoint, pass --allow-legacy-flow."
     )

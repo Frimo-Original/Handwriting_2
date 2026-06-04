@@ -6,10 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
+from handwriting_ai.checkpoint import load_checkpoint
 from handwriting_ai.config import load_config
 from handwriting_ai.data.dataset import dataset_summary
 from handwriting_ai.data.rendering import render_points_to_image
 from handwriting_ai.data.transforms import validate_points
+from handwriting_ai.generator_checkpoint import generator_checkpoint_problem, is_current_generator_payload
 from handwriting_ai.inference import generate_points, save_points_json, save_points_png
 from handwriting_ai.seed import resolve_device
 from handwriting_ai.training.autoencoder import train_autoencoder
@@ -47,6 +49,13 @@ def cmd_train_recognizer(args: argparse.Namespace) -> None:
 
 def cmd_generate(args: argparse.Namespace) -> None:
     config = load_config(args.config)
+    payload = load_checkpoint(args.generator_checkpoint, map_location="cpu")
+    if not is_current_generator_payload(payload):
+        raise ValueError(
+            f"Generator checkpoint is outdated or unsupported: {args.generator_checkpoint}\n"
+            f"Reason: {generator_checkpoint_problem(payload)}\n"
+            "Retrain the generator with: python main_training.py --stage generator"
+        )
     device = resolve_device(args.device or config.hardware.device)
     points = generate_points(
         text=args.text,
@@ -86,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config(ae)
     ae.set_defaults(func=cmd_train_autoencoder)
 
-    gen = sub.add_parser("train-generator", help="Train text-conditioned latent flow generator.")
+    gen = sub.add_parser("train-generator", help="Train text-conditioned latent regressor generator.")
     _add_config(gen)
     gen.add_argument("--autoencoder-checkpoint", required=True)
     gen.set_defaults(func=cmd_train_generator)
@@ -121,4 +130,3 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     args.func(args)
-

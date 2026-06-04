@@ -4,6 +4,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from handwriting_ai.latent_stats import LatentNormalizationStats, denormalize_latents
 from handwriting_ai.models.autoencoder import AutoencoderOutput
 from handwriting_ai.models.flow import LatentFlowTransformer
 from handwriting_ai.models.latent_regressor import LatentRegressorTransformer
@@ -13,6 +14,13 @@ def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     while mask.ndim < values.ndim:
         mask = mask.unsqueeze(-1)
     return (values * mask).sum() / mask.sum().clamp(min=1)
+
+
+def masked_std(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    valid = values[mask]
+    if valid.shape[0] < 2:
+        return values.new_zeros(values.shape[-1])
+    return valid.std(dim=0, unbiased=False)
 
 
 def curvature_loss(pred_xy: torch.Tensor, target_xy: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -132,18 +140,66 @@ def latent_regression_loss(
     text_mask: torch.Tensor,
     *,
     length_loss_weight: float,
+    autoencoder: nn.Module | None = None,
+    latent_normalization: LatentNormalizationStats | None = None,
+    target_points: torch.Tensor | None = None,
+    point_mask: torch.Tensor | None = None,
+    latent_loss_weight: float = 1.0,
+    latent_std_weight: float = 0.0,
+    decoded_xy_weight: float = 0.0,
+    decoded_pen_weight: float = 0.0,
+    decoded_curvature_weight: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     output = model(text, text_mask, latent_lengths=latent_lengths)
     latent_loss = masked_mean(
         F.smooth_l1_loss(output.latents, latents, reduction="none"),
         latent_mask,
     )
+    std_loss = output.latents.new_tensor(0.0)
+    if latent_std_weight > 0.0:
+        pred_std = masked_std(output.latents, latent_mask)
+        target_std = masked_std(latents, latent_mask)
+        std_loss = F.smooth_l1_loss(pred_std, target_std)
+
+    decoded_xy = output.latents.new_tensor(0.0)
+    decoded_pen = output.latents.new_tensor(0.0)
+    decoded_curve = output.latents.new_tensor(0.0)
+    needs_decoded = decoded_xy_weight > 0.0 or decoded_pen_weight > 0.0 or decoded_curvature_weight > 0.0
+    if needs_decoded:
+        if autoencoder is None or target_points is None or point_mask is None:
+            raise ValueError("Decoded generator loss requires autoencoder, target_points and point_mask")
+        decoder_latents = output.latents
+        if latent_normalization is not None:
+            decoder_latents = denormalize_latents(decoder_latents, latent_normalization)
+        decoder_latents = decoder_latents * output.latent_mask.unsqueeze(-1)
+        decoded = autoencoder.decode(decoder_latents, target_length=target_points.shape[1])
+        decoded_xy = masked_mean(
+            F.smooth_l1_loss(decoded[..., :2], target_points[..., :2], reduction="none"),
+            point_mask,
+        )
+        decoded_pen = masked_mean(
+            F.binary_cross_entropy_with_logits(decoded[..., 2], target_points[..., 2], reduction="none"),
+            point_mask,
+        )
+        decoded_curve = curvature_loss(decoded[..., :2], target_points[..., :2], point_mask)
+
     length_target = torch.log1p(latent_lengths.float())
     length_loss = F.mse_loss(output.length_log, length_target)
-    loss = latent_loss + length_loss_weight * length_loss
+    loss = (
+        latent_loss_weight * latent_loss
+        + latent_std_weight * std_loss
+        + decoded_xy_weight * decoded_xy
+        + decoded_pen_weight * decoded_pen
+        + decoded_curvature_weight * decoded_curve
+        + length_loss_weight * length_loss
+    )
     return loss, {
         "loss": float(loss.detach().cpu()),
         "latent": float(latent_loss.detach().cpu()),
+        "latent_std": float(std_loss.detach().cpu()),
+        "decoded_xy": float(decoded_xy.detach().cpu()),
+        "decoded_pen": float(decoded_pen.detach().cpu()),
+        "decoded_curvature": float(decoded_curve.detach().cpu()),
         "length": float(length_loss.detach().cpu()),
     }
 

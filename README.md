@@ -24,10 +24,11 @@
 2. `LatentRegressorTransformer`
 
    Генерирует latent-последовательность по тексту. Это supervised Transformer:
-   он напрямую учится предсказывать latent-векторы автоэнкодера по строке
-   текста и позиции внутри будущей траектории. Для маленького датасета это
-   надёжнее, чем flow/diffusion: модель должна сначала научиться писать хотя
-   бы train-примеры.
+   он учится предсказывать latent-векторы автоэнкодера, но loss считается не
+   только в latent-пространстве: предсказанные latent-ы сразу пропускаются через
+   decoder автоэнкодера, и модель получает штраф за ошибочные `dx/dy`,
+   подъёмы пера и слишком сглаженную latent-статистику. Это защищает от
+   схлопывания в длинную среднюю линию.
 
 3. `TrajectoryRecognizer`
 
@@ -77,7 +78,7 @@
 .venv/bin/python main_evaluate.py --stage autoencoder --split val --count 8
 ```
 
-Открой картинки в `outputs/eval/autoencoder/`. Реконструкция должна быть
+Открой картинки в `outputs/eval/val/autoencoder/`. Реконструкция должна быть
 похожа на оригинал почти до уровня отдельных букв. Если она превращает буквы в
 палочки или ломает соединения, генератор дальше не спасёт ситуацию.
 
@@ -93,6 +94,9 @@
 .venv/bin/python main_evaluate.py --stage generator --split train --count 8
 .venv/bin/python main_evaluate.py --stage generator --split val --count 8
 ```
+
+Рендеры будут разнесены по папкам `outputs/eval/train/generator/` и
+`outputs/eval/val/generator/`, чтобы train и val не смешивались.
 
 По умолчанию `main_evaluate.py` для генератора берёт длину latent-последовательности
 из реального примера. Это упрощает диагностику: если даже при правильной длине
@@ -235,9 +239,10 @@
    регуляризация.
 
 В текущей версии генератор обучается как supervised latent-регрессор с
-нормализацией latent-пространства автоэнкодера. Если генератор был обучен
-старой flow-версией или старой версией без `latent_normalization`, его нужно
-переобучить:
+нормализацией latent-пространства автоэнкодера и decoded trajectory loss.
+Если генератор был обучен старой flow-версией, старой версией без
+`latent_normalization` или версией до `generator_training_version = 2`, его
+нужно переобучить:
 
 ```bash
 .venv/bin/python main_training.py --stage generator
@@ -246,9 +251,10 @@
 Автоэнкодер при этом можно не переобучать, если его реконструкции выглядят
 достаточно хорошо.
 
-`main_generate.py` специально не будет молча использовать старый flow-чекпойнт:
-если увидишь сообщение `Generator checkpoint is legacy or unsupported`, просто
-переобучи generator командой выше. Старый чекпойнт можно открыть только явно:
+`main_generate.py` специально не будет молча использовать старый чекпойнт:
+если увидишь сообщение `Generator checkpoint is outdated or unsupported`,
+просто переобучи generator командой выше. Старый flow-чекпойнт можно открыть
+только явно:
 
 ```bash
 .venv/bin/python main_generate.py "Текст" --allow-legacy-flow
