@@ -277,3 +277,43 @@
 PYTHONPATH=src .venv/bin/python -m handwriting_ai audit-data --config configs/gtx1660.toml
 PYTHONPATH=src .venv/bin/python -m handwriting_ai render --json-path outputs/generated/sample.json --out outputs/generated/sample.png
 ```
+
+## Синхронизация чекпойнтов по локальной сети
+
+Если один ПК обучает модели на видеокарте, а второй нужен для хранения или
+анализа чекпойнтов, используй `main_sync.py`.
+
+На ПК-приёмнике, без видеокарты:
+
+```bash
+python main_sync.py serve --root /path/to/Handwriting --host 0.0.0.0 --port 8765 --token my_secret
+```
+
+На ПК с видеокартой, в папке проекта:
+
+```bash
+python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret
+```
+
+Замени `192.168.1.20` на IP ПК-приёмника. Скрипт будет раз в минуту искать
+новые или изменённые файлы в `runs/` и отправлять:
+
+- `best.pt`;
+- `last.pt`;
+- `epoch_*.pt`;
+- `config.json`.
+
+Если нужны только `best.pt` и `last.pt`, без промежуточных эпох:
+
+```bash
+python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --best-last-only
+```
+
+Разовая отправка вместо постоянного наблюдения:
+
+```bash
+python main_sync.py push --remote http://192.168.1.20:8765 --token my_secret
+```
+
+Файлы, которые изменялись меньше `--min-age` секунд назад, не отправляются,
+чтобы не копировать недописанный чекпойнт. По умолчанию `--min-age 5`.
