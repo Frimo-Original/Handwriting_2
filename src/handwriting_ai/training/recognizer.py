@@ -82,8 +82,13 @@ def train_recognizer(config: ExperimentConfig) -> Path:
             metrics_list.append(metric)
             progress.set_postfix(loss=f"{metric['loss']:.4f}")
 
-        val_metrics = evaluate_recognizer(model, val_loader, device)
         train_avg = average_metric_dicts(metrics_list)
+        should_eval = epoch % config.recognizer.eval_every == 0 or epoch == config.recognizer.epochs
+        if not should_eval:
+            print(f"CTC epoch {epoch}: train_loss={train_avg['loss']:.4f} val=skipped")
+            continue
+
+        val_metrics = evaluate_recognizer(model, val_loader, device)
         print(f"CTC epoch {epoch}: train_loss={train_avg['loss']:.4f} val_loss={val_metrics['loss']:.4f}")
 
         payload = {
@@ -100,7 +105,7 @@ def train_recognizer(config: ExperimentConfig) -> Path:
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]
             save_checkpoint(best_path, **payload)
-        if epoch % config.recognizer.checkpoint_every == 0:
+        if epoch % config.recognizer.checkpoint_every == 0 or epoch == config.recognizer.epochs:
             save_checkpoint(run_dir / f"epoch_{epoch:04d}.pt", **payload)
     return best_path
 

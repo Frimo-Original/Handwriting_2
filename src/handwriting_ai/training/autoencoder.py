@@ -87,8 +87,13 @@ def train_autoencoder(config: ExperimentConfig) -> Path:
             train_metrics.append(metrics)
             progress.set_postfix(loss=f"{metrics['loss']:.4f}")
 
-        val_metrics = evaluate_autoencoder(model, val_loader, config, device)
         train_avg = average_metric_dicts(train_metrics)
+        should_eval = epoch % config.autoencoder.eval_every == 0 or epoch == config.autoencoder.epochs
+        if not should_eval:
+            print(f"AE epoch {epoch}: train_loss={train_avg['loss']:.4f} val=skipped")
+            continue
+
+        val_metrics = evaluate_autoencoder(model, val_loader, config, device)
         print(
             f"AE epoch {epoch}: train_loss={train_avg['loss']:.4f} "
             f"val_loss={val_metrics['loss']:.4f} val_xy={val_metrics['xy']:.4f}"
@@ -108,7 +113,7 @@ def train_autoencoder(config: ExperimentConfig) -> Path:
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]
             save_checkpoint(best_path, **payload)
-        if epoch % config.autoencoder.checkpoint_every == 0:
+        if epoch % config.autoencoder.checkpoint_every == 0 or epoch == config.autoencoder.epochs:
             save_checkpoint(run_dir / f"epoch_{epoch:04d}.pt", **payload)
 
     return best_path

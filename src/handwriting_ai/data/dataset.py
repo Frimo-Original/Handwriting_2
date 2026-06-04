@@ -206,6 +206,11 @@ def build_dataloaders(
     stats: NormalizationStats | None = None,
 ) -> tuple[DataLoader[Batch], DataLoader[Batch], NormalizationStats]:
     train_dataset, val_dataset, stats = build_datasets(data_config, stats=stats)
+    loader_kwargs: dict[str, Any] = {}
+    if hardware_config.num_workers > 0:
+        loader_kwargs["persistent_workers"] = hardware_config.persistent_workers
+        if hardware_config.prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = hardware_config.prefetch_factor
     train_loader = DataLoader(
         train_dataset,
         batch_size=data_config.batch_size,
@@ -214,6 +219,7 @@ def build_dataloaders(
         pin_memory=hardware_config.pin_memory,
         collate_fn=collate_batch,
         drop_last=False,
+        **loader_kwargs,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -223,6 +229,7 @@ def build_dataloaders(
         pin_memory=hardware_config.pin_memory,
         collate_fn=collate_batch,
         drop_last=False,
+        **loader_kwargs,
     )
     return train_loader, val_loader, stats
 

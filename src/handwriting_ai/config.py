@@ -19,6 +19,8 @@ class HardwareConfig:
     num_workers: int
     pin_memory: bool
     amp: bool
+    persistent_workers: bool = False
+    prefetch_factor: int | None = None
     torch_compile: bool = False
     matmul_precision: str | None = None
 
@@ -56,6 +58,7 @@ class AutoencoderConfig:
     curvature_weight: float
     render_weight: float
     checkpoint_every: int
+    eval_every: int = 1
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,7 @@ class GeneratorConfig:
     checkpoint_every: int
     flow_steps: int
     temperature: float
+    eval_every: int = 1
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,7 @@ class RecognizerConfig:
     grad_accum_steps: int
     max_grad_norm: float
     checkpoint_every: int
+    eval_every: int = 1
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,12 @@ def load_config(path: str | Path) -> ExperimentConfig:
             num_workers=int(hardware.get("num_workers", 0)),
             pin_memory=bool(hardware.get("pin_memory", False)),
             amp=bool(hardware.get("amp", False)),
+            persistent_workers=bool(hardware.get("persistent_workers", False)),
+            prefetch_factor=(
+                None
+                if hardware.get("prefetch_factor") in (None, 0)
+                else int(hardware["prefetch_factor"])
+            ),
             torch_compile=bool(hardware.get("torch_compile", False)),
             matmul_precision=hardware.get("matmul_precision"),
         ),
@@ -155,4 +166,3 @@ def load_config(path: str | Path) -> ExperimentConfig:
         generator=GeneratorConfig(**generator),
         recognizer=RecognizerConfig(**recognizer),
     )
-

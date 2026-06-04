@@ -135,8 +135,13 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
             metrics_list.append(metrics)
             progress.set_postfix(loss=f"{metrics['loss']:.4f}")
 
-        val_metrics = evaluate_generator(model, autoencoder, val_loader, config, device, latent_stats)
         train_avg = average_metric_dicts(metrics_list)
+        should_eval = epoch % config.generator.eval_every == 0 or epoch == config.generator.epochs
+        if not should_eval:
+            print(f"Regressor epoch {epoch}: train_loss={train_avg['loss']:.4f} val=skipped")
+            continue
+
+        val_metrics = evaluate_generator(model, autoencoder, val_loader, config, device, latent_stats)
         print(
             f"Regressor epoch {epoch}: train_loss={train_avg['loss']:.4f} "
             f"val_loss={val_metrics['loss']:.4f} val_latent={val_metrics['latent']:.4f}"
@@ -159,7 +164,7 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]
             save_checkpoint(best_path, **payload)
-        if epoch % config.generator.checkpoint_every == 0:
+        if epoch % config.generator.checkpoint_every == 0 or epoch == config.generator.epochs:
             save_checkpoint(run_dir / f"epoch_{epoch:04d}.pt", **payload)
 
     return best_path

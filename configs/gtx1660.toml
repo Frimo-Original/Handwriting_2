@@ -8,6 +8,8 @@ device = "auto"
 num_workers = 2
 pin_memory = true
 amp = true
+persistent_workers = true
+prefetch_factor = 2
 torch_compile = false
 matmul_precision = "high"
 
@@ -40,7 +42,8 @@ kl_weight = 0.0002
 pen_weight = 0.35
 curvature_weight = 0.05
 render_weight = 0.0
-checkpoint_every = 5
+checkpoint_every = 20
+eval_every = 5
 
 [generator]
 hidden_dim = 192
@@ -57,6 +60,7 @@ length_loss_weight = 0.08
 checkpoint_every = 5
 flow_steps = 32
 temperature = 0.85
+eval_every = 5
 
 [recognizer]
 hidden_dim = 160
@@ -68,4 +72,4 @@ epochs = 80
 grad_accum_steps = 4
 max_grad_norm = 1.0
 checkpoint_every = 5
-
+eval_every = 5

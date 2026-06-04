@@ -8,6 +8,7 @@ device = "cpu"
 num_workers = 0
 pin_memory = false
 amp = false
+persistent_workers = false
 torch_compile = false
 
 [data]
@@ -38,6 +39,7 @@ pen_weight = 0.35
 curvature_weight = 0.02
 render_weight = 0.0
 checkpoint_every = 1
+eval_every = 1
 
 [generator]
 hidden_dim = 48
@@ -54,6 +56,7 @@ length_loss_weight = 0.05
 checkpoint_every = 1
 flow_steps = 4
 temperature = 1.0
+eval_every = 1
 
 [recognizer]
 hidden_dim = 48
@@ -65,4 +68,4 @@ epochs = 1
 grad_accum_steps = 1
 max_grad_norm = 1.0
 checkpoint_every = 1
-
+eval_every = 1
