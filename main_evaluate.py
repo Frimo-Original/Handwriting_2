@@ -117,23 +117,36 @@ def evaluate_generator(args: argparse.Namespace, config: ExperimentConfig, devic
         if args.generator_checkpoint
         else default_generator_checkpoint(config, args.generator_selection)
     )
-    require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
     require_checkpoint(generator_checkpoint, purpose="Generator")
     require_current_generator_checkpoint(generator_checkpoint)
-    _, stats = load_autoencoder(autoencoder_checkpoint, device)
+    generator_payload = load_checkpoint(generator_checkpoint, map_location="cpu")
+    generator_model_type = generator_payload.get("model_type", "latent_flow")
+    if generator_model_type == "trajectory_generator":
+        stats = NormalizationStats.from_dict(generator_payload["normalization"])
+        downsample_factor = None
+    else:
+        require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
+        _, stats = load_autoencoder(autoencoder_checkpoint, device)
+        autoencoder_payload = load_checkpoint(autoencoder_checkpoint, map_location="cpu")
+        downsample_factor = int(autoencoder_payload["model_kwargs"]["downsample_factor"])
     out_dir = Path(args.out_dir) / args.split / "generator"
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Autoencoder checkpoint: {autoencoder_checkpoint}")
+    if generator_model_type == "trajectory_generator":
+        print("Autoencoder checkpoint: not used for trajectory_generator inference")
+    else:
+        print(f"Autoencoder checkpoint: {autoencoder_checkpoint}")
     print(f"Generator checkpoint:   {generator_checkpoint}")
 
-    autoencoder_payload = load_checkpoint(autoencoder_checkpoint, map_location="cpu")
-    downsample_factor = int(autoencoder_payload["model_kwargs"]["downsample_factor"])
     for item in selected_items(config, stats, args.split, args.count):
         text = decode_tokens(item["text"].numpy().tolist())
         original_points = deltas_to_points(item["points"].numpy(), mean=stats.mean, std=stats.std)
         latent_length = None
         if not args.use_predicted_length:
-            latent_length = int(math.ceil(len(item["points"]) / downsample_factor))
+            if generator_model_type == "trajectory_generator":
+                latent_length = int(len(item["points"]))
+            else:
+                assert downsample_factor is not None
+                latent_length = int(math.ceil(len(item["points"]) / downsample_factor))
         generated_points = generate_points(
             text=text,
             autoencoder_checkpoint=autoencoder_checkpoint,
@@ -197,7 +210,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recognizer-checkpoint")
     parser.add_argument("--steps", type=int)
     parser.add_argument("--temperature", type=float)
-    parser.add_argument("--max-latent-length", type=int, default=768)
+    parser.add_argument(
+        "--max-point-length",
+        "--max-latent-length",
+        dest="max_latent_length",
+        type=int,
+        default=4096,
+        help="Maximum generated length; points for trajectory_generator, latents for legacy generators.",
+    )
     parser.add_argument("--pen-threshold", type=float, default=0.5)
     parser.add_argument(
         "--use-predicted-length",

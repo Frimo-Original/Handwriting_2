@@ -8,6 +8,7 @@ from handwriting_ai.latent_stats import LatentNormalizationStats, denormalize_la
 from handwriting_ai.models.autoencoder import AutoencoderOutput
 from handwriting_ai.models.flow import LatentFlowTransformer
 from handwriting_ai.models.latent_regressor import LatentRegressorTransformer
+from handwriting_ai.models.trajectory_generator import TrajectoryGenerator
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -229,6 +230,58 @@ def latent_regression_loss(
         "decoded_pen": float(decoded_pen.detach().cpu()),
         "decoded_curvature": float(decoded_curve.detach().cpu()),
         "length": float(length_loss.detach().cpu()),
+    }
+
+
+def trajectory_generator_loss(
+    model: TrajectoryGenerator,
+    points: torch.Tensor,
+    point_mask: torch.Tensor,
+    point_lengths: torch.Tensor,
+    text: torch.Tensor,
+    text_mask: torch.Tensor,
+    *,
+    length_loss_weight: float,
+    xy_weight: float,
+    path_weight: float,
+    pen_weight: float,
+    pen_pos_weight: float,
+    curvature_weight: float,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    output = model(text, text_mask, point_lengths=point_lengths)
+    pred = output.deltas
+    xy = masked_mean(
+        F.smooth_l1_loss(pred[..., :2], points[..., :2], reduction="none"),
+        point_mask,
+    )
+    path = cumulative_xy_loss(pred[..., :2], points[..., :2], point_mask)
+    pos_weight = pred.new_tensor(float(pen_pos_weight))
+    pen = masked_mean(
+        F.binary_cross_entropy_with_logits(
+            pred[..., 2],
+            points[..., 2],
+            pos_weight=pos_weight,
+            reduction="none",
+        ),
+        point_mask,
+    )
+    curve = curvature_loss(pred[..., :2], points[..., :2], point_mask)
+    length_target = torch.log1p(point_lengths.float())
+    length = F.mse_loss(output.length_log, length_target)
+    loss = (
+        xy_weight * xy
+        + path_weight * path
+        + pen_weight * pen
+        + curvature_weight * curve
+        + length_loss_weight * length
+    )
+    return loss, {
+        "loss": float(loss.detach().cpu()),
+        "xy": float(xy.detach().cpu()),
+        "path": float(path.detach().cpu()),
+        "pen": float(pen.detach().cpu()),
+        "curvature": float(curve.detach().cpu()),
+        "length": float(length.detach().cpu()),
     }
 
 

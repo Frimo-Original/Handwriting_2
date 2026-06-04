@@ -18,6 +18,7 @@ from handwriting_ai.models import (
     InkAutoencoder,
     LatentFlowTransformer,
     LatentRegressorTransformer,
+    TrajectoryGenerator,
     TrajectoryRecognizer,
 )
 from handwriting_ai.training.losses import (
@@ -25,6 +26,7 @@ from handwriting_ai.training.losses import (
     flow_matching_loss,
     latent_regression_loss,
     recognizer_ctc_loss,
+    trajectory_generator_loss,
 )
 
 
@@ -156,6 +158,40 @@ class ModelTests(unittest.TestCase):
         loss.backward()
         self.assertEqual(log_probs.shape[1], 2)
 
+    def test_trajectory_generator_shapes_and_backward(self) -> None:
+        model = TrajectoryGenerator(
+            hidden_dim=32,
+            text_dim=32,
+            layers=2,
+            n_heads=4,
+            dropout=0.0,
+        )
+        points = torch.randn(2, 64, 3)
+        points[..., 2] = (points[..., 2] > 0).float()
+        point_lengths = torch.tensor([64, 48], dtype=torch.long)
+        point_mask = torch.arange(64).unsqueeze(0) < point_lengths.unsqueeze(1)
+        text = torch.tensor([[10, 11, 12, 89], [13, 14, 89, 90]], dtype=torch.long)
+        text_mask = text != 90
+        loss, metrics = trajectory_generator_loss(
+            model,
+            points,
+            point_mask,
+            point_lengths,
+            text,
+            text_mask,
+            length_loss_weight=0.1,
+            xy_weight=1.0,
+            path_weight=0.5,
+            pen_weight=0.5,
+            pen_pos_weight=4.0,
+            curvature_weight=0.1,
+        )
+        loss.backward()
+        self.assertIn("path", metrics)
+        sampled, sampled_mask = model.sample(text, text_mask, point_length=32)
+        self.assertEqual(sampled.shape, (2, 32, 3))
+        self.assertEqual(sampled_mask.shape, (2, 32))
+
     def test_inference_with_temporary_checkpoints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -215,6 +251,42 @@ class ModelTests(unittest.TestCase):
                 latent_length=4,
             )
             self.assertEqual(points.shape, (16, 3))
+            self.assertEqual(int(points[-1, 2]), 1)
+
+    def test_inference_with_trajectory_generator_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            generator_path = tmp_path / "trajectory.pt"
+            generator = TrajectoryGenerator(
+                hidden_dim=16,
+                text_dim=16,
+                layers=1,
+                n_heads=1,
+                dropout=0.0,
+            )
+            save_checkpoint(
+                generator_path,
+                model_type="trajectory_generator",
+                model_state=generator.state_dict(),
+                model_kwargs={
+                    "hidden_dim": 16,
+                    "text_dim": 16,
+                    "layers": 1,
+                    "n_heads": 1,
+                    "dropout": 0.0,
+                },
+                normalization={"mean": [0.0, 0.0], "std": [1.0, 1.0]},
+                vocab_tokens=VOCAB_TOKENS,
+            )
+            points = generate_points(
+                text="тест",
+                autoencoder_checkpoint=tmp_path / "missing_ae.pt",
+                generator_checkpoint=generator_path,
+                device=torch.device("cpu"),
+                latent_length=24,
+                temperature=0.0,
+            )
+            self.assertEqual(points.shape, (24, 3))
             self.assertEqual(int(points[-1, 2]), 1)
 
     def test_inference_with_latent_regressor_checkpoint(self) -> None:

@@ -70,14 +70,14 @@ def require_checkpoint(path: Path, *, purpose: str) -> Path:
     return path
 
 
-def validate_generator_checkpoint(path: Path, *, allow_legacy_flow: bool) -> None:
+def validate_generator_checkpoint(path: Path, *, allow_legacy_flow: bool) -> dict:
     payload = load_checkpoint(path, map_location="cpu")
     model_type = payload.get("model_type", "latent_flow")
     if is_current_generator_payload(payload):
-        return
+        return payload
     if allow_legacy_flow and model_type == "latent_flow":
         print(f"Warning: using legacy flow generator checkpoint: {path}")
-        return
+        return payload
     raise ValueError(
         f"Generator checkpoint is outdated or unsupported: {path}\n"
         f"Reason: {generator_checkpoint_problem(payload)}\n"
@@ -97,9 +97,10 @@ def run_generation(args: argparse.Namespace) -> None:
         if args.generator_checkpoint
         else default_generator_checkpoint(config, args.generator_selection)
     )
-    require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
     require_checkpoint(generator_checkpoint, purpose="Generator")
-    validate_generator_checkpoint(generator_checkpoint, allow_legacy_flow=args.allow_legacy_flow)
+    generator_payload = validate_generator_checkpoint(generator_checkpoint, allow_legacy_flow=args.allow_legacy_flow)
+    if generator_payload.get("model_type", "latent_flow") != "trajectory_generator":
+        require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
 
     out_dir = Path(args.out_dir).expanduser()
     out_json, out_png = resolve_output_paths(out_dir, args.name, text)
@@ -145,15 +146,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-legacy-flow",
         action="store_true",
-        help="Allow old LatentFlowTransformer checkpoints. New training uses latent_regressor.",
+        help="Allow old LatentFlowTransformer checkpoints. New training uses trajectory_generator.",
     )
     parser.add_argument("--out-dir", default="outputs/generated", help="Directory for JSON and PNG outputs.")
     parser.add_argument("--name", help="Output filename without extension.")
     parser.add_argument("--device", help="cpu, cuda, cuda:0, or auto. Defaults to config hardware.device.")
-    parser.add_argument("--steps", type=int, help="Flow integration steps. Defaults to config generator.flow_steps.")
+    parser.add_argument("--steps", type=int, help="Flow integration steps for legacy flow checkpoints.")
     parser.add_argument("--temperature", type=float, help="Sampling temperature. Defaults to config generator.temperature.")
-    parser.add_argument("--latent-length", type=int, help="Force latent length instead of model prediction.")
-    parser.add_argument("--max-latent-length", type=int, default=768)
+    parser.add_argument(
+        "--point-length",
+        "--latent-length",
+        dest="latent_length",
+        type=int,
+        help="Force generated point count for trajectory_generator; legacy checkpoints treat it as latent length.",
+    )
+    parser.add_argument(
+        "--max-point-length",
+        "--max-latent-length",
+        dest="max_latent_length",
+        type=int,
+        default=4096,
+        help="Maximum generated length; points for trajectory_generator, latents for legacy generators.",
+    )
     parser.add_argument("--pen-threshold", type=float, default=0.5)
     return parser
 

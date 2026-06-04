@@ -11,8 +11,7 @@ from handwriting_ai.config import DataConfig, ExperimentConfig
 from handwriting_ai.data import NormalizationStats, build_dataloaders
 from handwriting_ai.data.codec import VOCAB_TOKENS
 from handwriting_ai.generator_checkpoint import CURRENT_GENERATOR_TRAINING_VERSION
-from handwriting_ai.latent_stats import LatentNormalizationStats, normalize_latents
-from handwriting_ai.models import InkAutoencoder, LatentRegressorTransformer
+from handwriting_ai.models import TrajectoryGenerator
 from handwriting_ai.seed import resolve_device, seed_everything
 from handwriting_ai.training.common import (
     average_metric_dicts,
@@ -22,13 +21,12 @@ from handwriting_ai.training.common import (
     to_plain,
     write_json,
 )
-from handwriting_ai.training.losses import latent_regression_loss
+from handwriting_ai.training.losses import trajectory_generator_loss
 
 
-def _generator_kwargs(config: ExperimentConfig, latent_dim: int) -> dict[str, int | float]:
+def _generator_kwargs(config: ExperimentConfig) -> dict[str, int | float]:
     generator = config.generator
     return {
-        "latent_dim": latent_dim,
         "hidden_dim": generator.hidden_dim,
         "text_dim": generator.text_dim,
         "layers": generator.layers,
@@ -45,20 +43,14 @@ def _generator_data_config(config: ExperimentConfig) -> DataConfig:
 
 def _generator_loss_kwargs(
     config: ExperimentConfig,
-    autoencoder: InkAutoencoder,
-    latent_stats: LatentNormalizationStats,
 ) -> dict[str, object]:
     generator = config.generator
     return {
-        "autoencoder": autoencoder,
-        "latent_normalization": latent_stats,
-        "latent_loss_weight": generator.latent_loss_weight,
-        "latent_std_weight": generator.latent_std_weight,
-        "decoded_xy_weight": generator.decoded_xy_weight,
-        "decoded_path_weight": generator.decoded_path_weight,
-        "decoded_pen_weight": generator.decoded_pen_weight,
-        "decoded_pen_pos_weight": generator.decoded_pen_pos_weight,
-        "decoded_curvature_weight": generator.decoded_curvature_weight,
+        "xy_weight": generator.decoded_xy_weight,
+        "path_weight": generator.decoded_path_weight,
+        "pen_weight": generator.decoded_pen_weight,
+        "pen_pos_weight": generator.decoded_pen_pos_weight,
+        "curvature_weight": generator.decoded_curvature_weight,
         "length_loss_weight": generator.length_loss_weight,
     }
 
@@ -66,8 +58,6 @@ def _generator_loss_kwargs(
 def _loss_weight_payload(config: ExperimentConfig) -> dict[str, float]:
     generator = config.generator
     return {
-        "latent_loss_weight": generator.latent_loss_weight,
-        "latent_std_weight": generator.latent_std_weight,
         "decoded_xy_weight": generator.decoded_xy_weight,
         "decoded_path_weight": generator.decoded_path_weight,
         "decoded_pen_weight": generator.decoded_pen_weight,
@@ -75,37 +65,6 @@ def _loss_weight_payload(config: ExperimentConfig) -> dict[str, float]:
         "decoded_curvature_weight": generator.decoded_curvature_weight,
         "length_loss_weight": generator.length_loss_weight,
     }
-
-
-@torch.no_grad()
-def compute_latent_normalization(
-    autoencoder: InkAutoencoder,
-    loader,
-    device: torch.device,
-) -> LatentNormalizationStats:
-    autoencoder.eval()
-    latent_dim = autoencoder.latent_dim
-    total = torch.zeros(latent_dim, device=device, dtype=torch.float64)
-    total_sq = torch.zeros(latent_dim, device=device, dtype=torch.float64)
-    count = torch.zeros((), device=device, dtype=torch.float64)
-    for batch in tqdm(loader, desc="Latent stats", leave=False):
-        batch = batch.to(device)
-        latents, _, _, latent_mask, _ = autoencoder.encode(
-            batch.points,
-            batch.point_lengths,
-            sample=False,
-        )
-        valid = latents[latent_mask].double()
-        total += valid.sum(dim=0)
-        total_sq += (valid * valid).sum(dim=0)
-        count += valid.shape[0]
-    mean = total / count.clamp(min=1.0)
-    variance = (total_sq / count.clamp(min=1.0) - mean * mean).clamp(min=1e-6)
-    std = torch.sqrt(variance)
-    return LatentNormalizationStats(
-        mean=[float(v) for v in mean.cpu()],
-        std=[float(v) for v in std.cpu()],
-    )
 
 
 def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path) -> Path:
@@ -118,20 +77,13 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
     data_config = _generator_data_config(config)
     train_loader, val_loader, _ = build_dataloaders(data_config, config.hardware, stats=stats)
 
-    autoencoder = InkAutoencoder(**ae_payload["model_kwargs"]).to(device)
-    autoencoder.load_state_dict(ae_payload["model_state"])
-    autoencoder.eval()
-    for parameter in autoencoder.parameters():
-        parameter.requires_grad_(False)
-
-    latent_stats = compute_latent_normalization(autoencoder, train_loader, device)
     run_dir = config.run.out_dir / "generator"
     run_dir.mkdir(parents=True, exist_ok=True)
     write_json(run_dir / "config.json", config)
     if not config.generator.augment_targets and config.data.augment:
         print("Generator target augmentation: disabled (autoencoder augmentation settings are ignored here)")
 
-    model = LatentRegressorTransformer(**_generator_kwargs(config, autoencoder.latent_dim)).to(device)
+    model = TrajectoryGenerator(**_generator_kwargs(config)).to(device)
     model = maybe_compile(model, config.hardware.torch_compile)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -151,27 +103,18 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
         model.train()
         optimizer.zero_grad(set_to_none=True)
         metrics_list: list[dict[str, float]] = []
-        progress = tqdm(train_loader, desc=f"Regressor train {epoch}", leave=False)
+        progress = tqdm(train_loader, desc=f"Trajectory train {epoch}", leave=False)
         for step, batch in enumerate(progress, start=1):
             batch = batch.to(device)
-            with torch.no_grad():
-                latents, _, _, latent_mask, latent_lengths = autoencoder.encode(
-                    batch.points,
-                    batch.point_lengths,
-                    sample=False,
-                )
-                latents = normalize_latents(latents, latent_stats) * latent_mask.unsqueeze(-1)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
-                loss, metrics = latent_regression_loss(
+                loss, metrics = trajectory_generator_loss(
                     model,
-                    latents,
-                    latent_mask,
-                    latent_lengths,
+                    batch.points,
+                    batch.point_mask,
+                    batch.point_lengths,
                     batch.text,
                     batch.text_mask,
-                    target_points=batch.points,
-                    point_mask=batch.point_mask,
-                    **_generator_loss_kwargs(config, autoencoder, latent_stats),
+                    **_generator_loss_kwargs(config),
                 )
                 loss = loss / config.generator.grad_accum_steps
             scaler.scale(loss).backward()
@@ -187,15 +130,14 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
         train_avg = average_metric_dicts(metrics_list)
         should_eval = epoch % config.generator.eval_every == 0 or epoch == config.generator.epochs
         if not should_eval:
-            print(f"Regressor epoch {epoch}: train_loss={train_avg['loss']:.4f} val=skipped")
+            print(f"Trajectory epoch {epoch}: train_loss={train_avg['loss']:.4f} val=skipped")
             continue
 
-        val_metrics = evaluate_generator(model, autoencoder, val_loader, config, device, latent_stats)
+        val_metrics = evaluate_generator(model, val_loader, config, device)
         print(
-            f"Regressor epoch {epoch}: train_loss={train_avg['loss']:.4f} "
-            f"val_loss={val_metrics['loss']:.4f} val_latent={val_metrics['latent']:.4f} "
-            f"val_xy={val_metrics['decoded_xy']:.4f} "
-            f"val_path={val_metrics['decoded_path']:.4f} val_pen={val_metrics['decoded_pen']:.4f}"
+            f"Trajectory epoch {epoch}: train_loss={train_avg['loss']:.4f} "
+            f"val_loss={val_metrics['loss']:.4f} val_xy={val_metrics['xy']:.4f} "
+            f"val_path={val_metrics['path']:.4f} val_pen={val_metrics['pen']:.4f}"
         )
 
         payload = {
@@ -207,11 +149,10 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
             "best_train_metric": min(best_train, train_avg["loss"]),
             "model_state": model_state_dict(model),
             "optimizer_state": optimizer.state_dict(),
-            "model_type": "latent_regressor",
-            "model_kwargs": _generator_kwargs(config, autoencoder.latent_dim),
+            "model_type": "trajectory_generator",
+            "model_kwargs": _generator_kwargs(config),
             "autoencoder_checkpoint": str(autoencoder_checkpoint),
             "normalization": stats.to_dict(),
-            "latent_normalization": latent_stats.to_dict(),
             "vocab_tokens": VOCAB_TOKENS,
             "config": to_plain(config),
             "generator_target_augmentation": config.generator.augment_targets,
@@ -235,32 +176,22 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
 @torch.no_grad()
 def evaluate_generator(
     model: torch.nn.Module,
-    autoencoder: InkAutoencoder,
     loader,
     config: ExperimentConfig,
     device: torch.device,
-    latent_stats: LatentNormalizationStats,
 ) -> dict[str, float]:
     model.eval()
     metrics_list: list[dict[str, float]] = []
     for batch in loader:
         batch = batch.to(device)
-        latents, _, _, latent_mask, latent_lengths = autoencoder.encode(
-            batch.points,
-            batch.point_lengths,
-            sample=False,
-        )
-        latents = normalize_latents(latents, latent_stats) * latent_mask.unsqueeze(-1)
-        _, metrics = latent_regression_loss(
+        _, metrics = trajectory_generator_loss(
             model,
-            latents,
-            latent_mask,
-            latent_lengths,
+            batch.points,
+            batch.point_mask,
+            batch.point_lengths,
             batch.text,
             batch.text_mask,
-            target_points=batch.points,
-            point_mask=batch.point_mask,
-            **_generator_loss_kwargs(config, autoencoder, latent_stats),
+            **_generator_loss_kwargs(config),
         )
         metrics_list.append(metrics)
     return average_metric_dicts(metrics_list)

@@ -79,8 +79,6 @@ class GeneratorConfig:
     temperature: float
     eval_every: int = 1
     augment_targets: bool = False
-    latent_loss_weight: float = 0.25
-    latent_std_weight: float = 0.10
     decoded_xy_weight: float = 8.0
     decoded_path_weight: float = 1.50
     decoded_pen_weight: float = 0.75

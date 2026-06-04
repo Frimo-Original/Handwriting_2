@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-CURRENT_GENERATOR_TRAINING_VERSION = 3
+CURRENT_GENERATOR_TRAINING_VERSION = 4
 
 
 def generator_training_version(payload: dict[str, Any]) -> int:
@@ -16,18 +16,15 @@ def generator_training_version(payload: dict[str, Any]) -> int:
 
 def is_current_generator_payload(payload: dict[str, Any]) -> bool:
     return (
-        payload.get("model_type") == "latent_regressor"
-        and "latent_normalization" in payload
+        payload.get("model_type") == "trajectory_generator"
         and generator_training_version(payload) >= CURRENT_GENERATOR_TRAINING_VERSION
     )
 
 
 def generator_checkpoint_problem(payload: dict[str, Any]) -> str:
     model_type = payload.get("model_type", "latent_flow")
-    if model_type != "latent_regressor":
-        return f"model_type={model_type!r}, expected 'latent_regressor'"
-    if "latent_normalization" not in payload:
-        return "missing latent_normalization"
+    if model_type != "trajectory_generator":
+        return f"model_type={model_type!r}, expected 'trajectory_generator'"
     version = generator_training_version(payload)
     if version < CURRENT_GENERATOR_TRAINING_VERSION:
         return (

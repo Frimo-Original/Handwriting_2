@@ -56,6 +56,8 @@ def cmd_generate(args: argparse.Namespace) -> None:
             f"Reason: {generator_checkpoint_problem(payload)}\n"
             "Retrain the generator with: python main_training.py --stage generator"
         )
+    if payload.get("model_type") != "trajectory_generator" and not args.autoencoder_checkpoint:
+        raise ValueError("--autoencoder-checkpoint is required for legacy generator checkpoints")
     device = resolve_device(args.device or config.hardware.device)
     points = generate_points(
         text=args.text,
@@ -95,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config(ae)
     ae.set_defaults(func=cmd_train_autoencoder)
 
-    gen = sub.add_parser("train-generator", help="Train text-conditioned latent regressor generator.")
+    gen = sub.add_parser("train-generator", help="Train direct text-to-trajectory generator.")
     _add_config(gen)
     gen.add_argument("--autoencoder-checkpoint", required=True)
     gen.set_defaults(func=cmd_train_generator)
@@ -107,15 +109,27 @@ def build_parser() -> argparse.ArgumentParser:
     generate = sub.add_parser("generate", help="Generate a plotter-ready trajectory from text.")
     _add_config(generate)
     generate.add_argument("--text", required=True)
-    generate.add_argument("--autoencoder-checkpoint", required=True)
+    generate.add_argument("--autoencoder-checkpoint", help="Required only for legacy generator checkpoints.")
     generate.add_argument("--generator-checkpoint", required=True)
     generate.add_argument("--out-json", required=True)
     generate.add_argument("--out-png")
     generate.add_argument("--device")
     generate.add_argument("--steps", type=int)
     generate.add_argument("--temperature", type=float)
-    generate.add_argument("--latent-length", type=int)
-    generate.add_argument("--max-latent-length", type=int, default=768)
+    generate.add_argument(
+        "--point-length",
+        "--latent-length",
+        dest="latent_length",
+        type=int,
+        help="Force generated point count for trajectory_generator; legacy checkpoints treat it as latent length.",
+    )
+    generate.add_argument(
+        "--max-point-length",
+        "--max-latent-length",
+        dest="max_latent_length",
+        type=int,
+        default=4096,
+    )
     generate.add_argument("--pen-threshold", type=float, default=0.5)
     generate.set_defaults(func=cmd_generate)
 
