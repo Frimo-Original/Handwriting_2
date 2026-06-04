@@ -30,6 +30,14 @@ class EntrypointTests(unittest.TestCase):
         args = main_evaluate.build_parser().parse_args([])
         self.assertEqual(args.profile, "gtx1660")
         self.assertEqual(args.stage, "all")
+        self.assertEqual(args.generator_selection, "best")
+
+    def test_generator_selection_parser(self) -> None:
+        eval_args = main_evaluate.build_parser().parse_args(["--generator-selection", "train_best"])
+        self.assertEqual(eval_args.generator_selection, "train_best")
+
+        generate_args = main_generate.build_parser().parse_args(["Тест", "--generator-selection", "last"])
+        self.assertEqual(generate_args.generator_selection, "last")
 
     def test_current_generator_checkpoint_detection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

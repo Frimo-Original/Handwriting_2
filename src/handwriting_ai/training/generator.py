@@ -55,7 +55,9 @@ def _generator_loss_kwargs(
         "latent_loss_weight": generator.latent_loss_weight,
         "latent_std_weight": generator.latent_std_weight,
         "decoded_xy_weight": generator.decoded_xy_weight,
+        "decoded_path_weight": generator.decoded_path_weight,
         "decoded_pen_weight": generator.decoded_pen_weight,
+        "decoded_pen_pos_weight": generator.decoded_pen_pos_weight,
         "decoded_curvature_weight": generator.decoded_curvature_weight,
         "length_loss_weight": generator.length_loss_weight,
     }
@@ -67,7 +69,9 @@ def _loss_weight_payload(config: ExperimentConfig) -> dict[str, float]:
         "latent_loss_weight": generator.latent_loss_weight,
         "latent_std_weight": generator.latent_std_weight,
         "decoded_xy_weight": generator.decoded_xy_weight,
+        "decoded_path_weight": generator.decoded_path_weight,
         "decoded_pen_weight": generator.decoded_pen_weight,
+        "decoded_pen_pos_weight": generator.decoded_pen_pos_weight,
         "decoded_curvature_weight": generator.decoded_curvature_weight,
         "length_loss_weight": generator.length_loss_weight,
     }
@@ -138,7 +142,9 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     best_val = float("inf")
+    best_train = float("inf")
     best_path = run_dir / "best.pt"
+    train_best_path = run_dir / "train_best.pt"
     last_path = run_dir / "last.pt"
 
     for epoch in range(1, config.generator.epochs + 1):
@@ -188,7 +194,8 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
         print(
             f"Regressor epoch {epoch}: train_loss={train_avg['loss']:.4f} "
             f"val_loss={val_metrics['loss']:.4f} val_latent={val_metrics['latent']:.4f} "
-            f"val_decoded_xy={val_metrics['decoded_xy']:.4f} val_pen={val_metrics['decoded_pen']:.4f}"
+            f"val_xy={val_metrics['decoded_xy']:.4f} "
+            f"val_path={val_metrics['decoded_path']:.4f} val_pen={val_metrics['decoded_pen']:.4f}"
         )
 
         payload = {
@@ -196,6 +203,8 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
             "generator_training_version": CURRENT_GENERATOR_TRAINING_VERSION,
             "metric": val_metrics["loss"],
             "best_metric": min(best_val, val_metrics["loss"]),
+            "train_metric": train_avg["loss"],
+            "best_train_metric": min(best_train, train_avg["loss"]),
             "model_state": model_state_dict(model),
             "optimizer_state": optimizer.state_dict(),
             "model_type": "latent_regressor",
@@ -214,6 +223,9 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]
             save_checkpoint(best_path, **payload)
+        if train_avg["loss"] < best_train:
+            best_train = train_avg["loss"]
+            save_checkpoint(train_best_path, **payload)
         if epoch % config.generator.checkpoint_every == 0 or epoch == config.generator.epochs:
             save_checkpoint(run_dir / f"epoch_{epoch:04d}.pt", **payload)
 

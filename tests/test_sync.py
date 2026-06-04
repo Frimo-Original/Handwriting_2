@@ -38,7 +38,7 @@ class SyncTests(unittest.TestCase):
             epochs_dir = root / "runs"
             run = epochs_dir / "gtx1660" / "generator"
             run.mkdir(parents=True)
-            for name in ["best.pt", "last.pt", "epoch_0005.pt", "config.json", "notes.txt"]:
+            for name in ["best.pt", "train_best.pt", "last.pt", "epoch_0005.pt", "config.json", "notes.txt"]:
                 (run / name).write_text(name, encoding="utf-8")
             old_time = time.time() - 20
             for path in run.iterdir():
@@ -59,7 +59,7 @@ class SyncTests(unittest.TestCase):
                 min_age=5,
             )
             names = {path.name for path in files}
-            self.assertEqual(names, {"best.pt", "last.pt", "epoch_0005.pt", "config.json"})
+            self.assertEqual(names, {"best.pt", "train_best.pt", "last.pt", "epoch_0005.pt", "config.json"})
 
             best_last = main_sync.selected_checkpoint_files(
                 epochs_dir,
@@ -68,7 +68,7 @@ class SyncTests(unittest.TestCase):
                 include_configs=True,
                 min_age=5,
             )
-            self.assertEqual({path.name for path in best_last}, {"best.pt", "last.pt", "config.json"})
+            self.assertEqual({path.name for path in best_last}, {"best.pt", "train_best.pt", "last.pt", "config.json"})
 
     def test_sender_parser_includes_configs_by_default(self) -> None:
         parser = main_sync.build_parser()

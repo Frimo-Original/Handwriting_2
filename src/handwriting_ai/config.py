@@ -81,8 +81,10 @@ class GeneratorConfig:
     augment_targets: bool = False
     latent_loss_weight: float = 0.25
     latent_std_weight: float = 0.10
-    decoded_xy_weight: float = 10.0
-    decoded_pen_weight: float = 0.50
+    decoded_xy_weight: float = 8.0
+    decoded_path_weight: float = 1.50
+    decoded_pen_weight: float = 0.75
+    decoded_pen_pos_weight: float = 8.0
     decoded_curvature_weight: float = 0.10
 
 

@@ -32,6 +32,17 @@ def curvature_loss(pred_xy: torch.Tensor, target_xy: torch.Tensor, mask: torch.T
     return masked_mean(F.smooth_l1_loss(pred_second, target_second, reduction="none"), second_mask)
 
 
+def cumulative_xy_loss(pred_xy: torch.Tensor, target_xy: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    pred_path = torch.cumsum(pred_xy, dim=1)
+    target_path = torch.cumsum(target_xy, dim=1)
+    lengths = mask.sum(dim=1).clamp(min=1).to(pred_xy.dtype).view(-1, 1, 1)
+    scale = torch.sqrt(lengths).clamp(min=1.0)
+    return masked_mean(
+        F.smooth_l1_loss(pred_path / scale, target_path / scale, reduction="none"),
+        mask,
+    )
+
+
 def _soft_raster(points_xy: torch.Tensor, mask: torch.Tensor, image_size: int = 64, sigma: float = 0.025) -> torch.Tensor:
     batch, _, _ = points_xy.shape
     device = points_xy.device
@@ -147,7 +158,9 @@ def latent_regression_loss(
     latent_loss_weight: float = 1.0,
     latent_std_weight: float = 0.0,
     decoded_xy_weight: float = 0.0,
+    decoded_path_weight: float = 0.0,
     decoded_pen_weight: float = 0.0,
+    decoded_pen_pos_weight: float = 1.0,
     decoded_curvature_weight: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     output = model(text, text_mask, latent_lengths=latent_lengths)
@@ -162,9 +175,15 @@ def latent_regression_loss(
         std_loss = F.smooth_l1_loss(pred_std, target_std)
 
     decoded_xy = output.latents.new_tensor(0.0)
+    decoded_path = output.latents.new_tensor(0.0)
     decoded_pen = output.latents.new_tensor(0.0)
     decoded_curve = output.latents.new_tensor(0.0)
-    needs_decoded = decoded_xy_weight > 0.0 or decoded_pen_weight > 0.0 or decoded_curvature_weight > 0.0
+    needs_decoded = (
+        decoded_xy_weight > 0.0
+        or decoded_path_weight > 0.0
+        or decoded_pen_weight > 0.0
+        or decoded_curvature_weight > 0.0
+    )
     if needs_decoded:
         if autoencoder is None or target_points is None or point_mask is None:
             raise ValueError("Decoded generator loss requires autoencoder, target_points and point_mask")
@@ -177,8 +196,15 @@ def latent_regression_loss(
             F.smooth_l1_loss(decoded[..., :2], target_points[..., :2], reduction="none"),
             point_mask,
         )
+        decoded_path = cumulative_xy_loss(decoded[..., :2], target_points[..., :2], point_mask)
+        pos_weight = decoded.new_tensor(float(decoded_pen_pos_weight))
         decoded_pen = masked_mean(
-            F.binary_cross_entropy_with_logits(decoded[..., 2], target_points[..., 2], reduction="none"),
+            F.binary_cross_entropy_with_logits(
+                decoded[..., 2],
+                target_points[..., 2],
+                pos_weight=pos_weight,
+                reduction="none",
+            ),
             point_mask,
         )
         decoded_curve = curvature_loss(decoded[..., :2], target_points[..., :2], point_mask)
@@ -189,6 +215,7 @@ def latent_regression_loss(
         latent_loss_weight * latent_loss
         + latent_std_weight * std_loss
         + decoded_xy_weight * decoded_xy
+        + decoded_path_weight * decoded_path
         + decoded_pen_weight * decoded_pen
         + decoded_curvature_weight * decoded_curve
         + length_loss_weight * length_loss
@@ -198,6 +225,7 @@ def latent_regression_loss(
         "latent": float(latent_loss.detach().cpu()),
         "latent_std": float(std_loss.detach().cpu()),
         "decoded_xy": float(decoded_xy.detach().cpu()),
+        "decoded_path": float(decoded_path.detach().cpu()),
         "decoded_pen": float(decoded_pen.detach().cpu()),
         "decoded_curvature": float(decoded_curve.detach().cpu()),
         "length": float(length_loss.detach().cpu()),

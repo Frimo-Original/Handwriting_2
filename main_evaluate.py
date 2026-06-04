@@ -42,8 +42,13 @@ def default_autoencoder_checkpoint(config: ExperimentConfig) -> Path:
     return config.run.out_dir / "autoencoder" / "best.pt"
 
 
-def default_generator_checkpoint(config: ExperimentConfig) -> Path:
-    return config.run.out_dir / "generator" / "best.pt"
+def default_generator_checkpoint(config: ExperimentConfig, selection: str = "best") -> Path:
+    filenames = {
+        "best": "best.pt",
+        "last": "last.pt",
+        "train_best": "train_best.pt",
+    }
+    return config.run.out_dir / "generator" / filenames[selection]
 
 
 def default_recognizer_checkpoint(config: ExperimentConfig) -> Path:
@@ -107,7 +112,11 @@ def evaluate_autoencoder(args: argparse.Namespace, config: ExperimentConfig, dev
 
 def evaluate_generator(args: argparse.Namespace, config: ExperimentConfig, device: torch.device) -> None:
     autoencoder_checkpoint = Path(args.autoencoder_checkpoint).expanduser() if args.autoencoder_checkpoint else default_autoencoder_checkpoint(config)
-    generator_checkpoint = Path(args.generator_checkpoint).expanduser() if args.generator_checkpoint else default_generator_checkpoint(config)
+    generator_checkpoint = (
+        Path(args.generator_checkpoint).expanduser()
+        if args.generator_checkpoint
+        else default_generator_checkpoint(config, args.generator_selection)
+    )
     require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
     require_checkpoint(generator_checkpoint, purpose="Generator")
     require_current_generator_checkpoint(generator_checkpoint)
@@ -179,6 +188,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device")
     parser.add_argument("--autoencoder-checkpoint")
     parser.add_argument("--generator-checkpoint")
+    parser.add_argument(
+        "--generator-selection",
+        choices=["best", "last", "train_best"],
+        default="best",
+        help="Default generator checkpoint to use when --generator-checkpoint is not set.",
+    )
     parser.add_argument("--recognizer-checkpoint")
     parser.add_argument("--steps", type=int)
     parser.add_argument("--temperature", type=float)

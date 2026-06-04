@@ -27,8 +27,9 @@
    он учится предсказывать latent-векторы автоэнкодера, но loss считается не
    только в latent-пространстве: предсказанные latent-ы сразу пропускаются через
    decoder автоэнкодера, и модель получает штраф за ошибочные `dx/dy`,
-   подъёмы пера и слишком сглаженную latent-статистику. Это защищает от
-   схлопывания в длинную среднюю линию.
+   накопленную траекторию, подъёмы пера и слишком сглаженную latent-статистику.
+   Это защищает от схлопывания в длинную среднюю линию и от постепенного
+   уползания строки из-за маленьких ошибок в дельтах.
 
 3. `TrajectoryRecognizer`
 
@@ -91,12 +92,15 @@
 После генератора проверить хотя бы train и val:
 
 ```bash
-.venv/bin/python main_evaluate.py --stage generator --split train --count 8
+.venv/bin/python main_evaluate.py --stage generator --split train --count 8 --generator-selection train_best
 .venv/bin/python main_evaluate.py --stage generator --split val --count 8
 ```
 
 Рендеры будут разнесены по папкам `outputs/eval/train/generator/` и
 `outputs/eval/val/generator/`, чтобы train и val не смешивались.
+`train_best.pt` нужен для диагностики: если он не пишет train-примеры, то
+генератор ещё не научился запоминать даже обучающую выборку. Обычный `best.pt`
+по-прежнему выбирается по validation loss.
 
 По умолчанию `main_evaluate.py` для генератора берёт длину latent-последовательности
 из реального примера. Это упрощает диагностику: если даже при правильной длине
@@ -153,6 +157,7 @@
 .venv/bin/python main_generate.py "Проверка температуры." --temperature 0.7
 .venv/bin/python main_generate.py "Более смелый вариант." --temperature 1.1
 .venv/bin/python main_generate.py "Фиксированная длина." --latent-length 128
+.venv/bin/python main_generate.py "Train-best диагностика." --generator-selection train_best
 .venv/bin/python main_generate.py "Именованный файл." --name my_sample
 ```
 
@@ -216,7 +221,7 @@
 .venv/bin/python main_evaluate.py --stage autoencoder --split val --count 8
 
 # 3. После generator: сначала train, потом val
-.venv/bin/python main_evaluate.py --stage generator --split train --count 8
+.venv/bin/python main_evaluate.py --stage generator --split train --count 8 --generator-selection train_best
 .venv/bin/python main_evaluate.py --stage generator --split val --count 8
 
 # 4. После recognizer
@@ -241,7 +246,7 @@
 В текущей версии генератор обучается как supervised latent-регрессор с
 нормализацией latent-пространства автоэнкодера и decoded trajectory loss.
 Если генератор был обучен старой flow-версией, старой версией без
-`latent_normalization` или версией до `generator_training_version = 2`, его
+`latent_normalization` или версией до `generator_training_version = 3`, его
 нужно переобучить:
 
 ```bash
@@ -312,11 +317,12 @@ python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret
 в локальную папку `runs/` и отправлять новые или изменённые файлы:
 
 - `best.pt`;
+- `train_best.pt`;
 - `last.pt`;
 - `epoch_*.pt`;
 - `config.json`.
 
-Если нужны только `best.pt`, `last.pt` и `config.json`, без промежуточных эпох:
+Если нужны только `best.pt`, `train_best.pt`, `last.pt` и `config.json`, без промежуточных эпох:
 
 ```bash
 python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --best-last-only
@@ -347,14 +353,16 @@ python main_sync.py watch --epochs-dir /Users/frimo/Documents/PycharmProjects/Ha
 В логе передачи видно, что именно произошло:
 
 ```text
-Scan 14:25:03: /.../runs | files=3 | mode=best/last only | configs=yes
+Scan 14:25:03: /.../runs | files=4 | mode=best/last only | configs=yes
 FILE gtx1660/generator/config.json | 1.8 KB
 UP   gtx1660/generator/config.json | 1.8 KB | 0.01s | 0.17 MB/s
 FILE gtx1660/generator/best.pt | 63.0 MB
 UP   gtx1660/generator/best.pt | 63.0 MB | 4.21s | 14.96 MB/s
+FILE gtx1660/generator/train_best.pt | 63.0 MB
+UP   gtx1660/generator/train_best.pt | 63.0 MB | 4.18s | 15.07 MB/s
 FILE gtx1660/generator/last.pt | 63.0 MB
 SKIP gtx1660/generator/last.pt | 63.0 MB | already on receiver
-Done. uploaded=2, skipped=1, found=3, sent=63.0 MB, elapsed=4.26s, avg=14.79 MB/s
+Done. uploaded=3, skipped=1, found=4, sent=126.0 MB, elapsed=8.45s, avg=14.91 MB/s
 ```
 
 `UP` означает, что файл передан. `SKIP` означает, что такой же файл уже есть

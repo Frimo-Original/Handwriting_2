@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-CURRENT_GENERATOR_TRAINING_VERSION = 2
+CURRENT_GENERATOR_TRAINING_VERSION = 3
 
 
 def generator_training_version(payload: dict[str, Any]) -> int:

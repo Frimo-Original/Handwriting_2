@@ -125,12 +125,15 @@ class ModelTests(unittest.TestCase):
             latent_loss_weight=0.25,
             latent_std_weight=0.1,
             decoded_xy_weight=1.0,
+            decoded_path_weight=0.5,
             decoded_pen_weight=0.5,
+            decoded_pen_pos_weight=4.0,
             decoded_curvature_weight=0.1,
         )
         loss.backward()
         self.assertIn("latent", metrics)
         self.assertIn("decoded_xy", metrics)
+        self.assertIn("decoded_path", metrics)
         self.assertIn("latent_std", metrics)
         sampled, sampled_mask = model.sample(text, text_mask, latent_length=7)
         self.assertEqual(sampled.shape, (2, 7, 16))

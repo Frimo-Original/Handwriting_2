@@ -39,8 +39,13 @@ def default_autoencoder_checkpoint(config: ExperimentConfig) -> Path:
     return config.run.out_dir / "autoencoder" / "best.pt"
 
 
-def default_generator_checkpoint(config: ExperimentConfig) -> Path:
-    return config.run.out_dir / "generator" / "best.pt"
+def default_generator_checkpoint(config: ExperimentConfig, selection: str = "best") -> Path:
+    filenames = {
+        "best": "best.pt",
+        "last": "last.pt",
+        "train_best": "train_best.pt",
+    }
+    return config.run.out_dir / "generator" / filenames[selection]
 
 
 def make_safe_name(text: str) -> str:
@@ -87,7 +92,11 @@ def run_generation(args: argparse.Namespace) -> None:
     config = load_config(config_path)
 
     autoencoder_checkpoint = Path(args.autoencoder_checkpoint).expanduser() if args.autoencoder_checkpoint else default_autoencoder_checkpoint(config)
-    generator_checkpoint = Path(args.generator_checkpoint).expanduser() if args.generator_checkpoint else default_generator_checkpoint(config)
+    generator_checkpoint = (
+        Path(args.generator_checkpoint).expanduser()
+        if args.generator_checkpoint
+        else default_generator_checkpoint(config, args.generator_selection)
+    )
     require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
     require_checkpoint(generator_checkpoint, purpose="Generator")
     validate_generator_checkpoint(generator_checkpoint, allow_legacy_flow=args.allow_legacy_flow)
@@ -127,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="Explicit TOML config path. Overrides --profile config path.")
     parser.add_argument("--autoencoder-checkpoint", help="Defaults to runs/<profile>/autoencoder/best.pt.")
     parser.add_argument("--generator-checkpoint", help="Defaults to runs/<profile>/generator/best.pt.")
+    parser.add_argument(
+        "--generator-selection",
+        choices=["best", "last", "train_best"],
+        default="best",
+        help="Default generator checkpoint to use when --generator-checkpoint is not set.",
+    )
     parser.add_argument(
         "--allow-legacy-flow",
         action="store_true",

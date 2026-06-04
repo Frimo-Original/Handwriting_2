@@ -83,7 +83,7 @@ def selected_checkpoint_files(
 
     patterns: list[str] = []
     if include_best_last:
-        patterns.extend(["**/best.pt", "**/last.pt"])
+        patterns.extend(["**/best.pt", "**/train_best.pt", "**/last.pt"])
     if include_epochs:
         patterns.append("**/epoch_*.pt")
     if include_configs:
@@ -394,7 +394,7 @@ def add_sender_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--best-last-only",
         action="store_true",
-        help="Send only best.pt and last.pt; skip epoch_*.pt.",
+        help="Send only best.pt, train_best.pt and last.pt; skip epoch_*.pt.",
     )
     parser.add_argument(
         "--include-configs",
