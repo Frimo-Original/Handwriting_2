@@ -29,7 +29,8 @@ class SyncTests(unittest.TestCase):
     def test_selected_checkpoint_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run = root / "runs" / "gtx1660" / "generator"
+            epochs_dir = root / "runs"
+            run = epochs_dir / "gtx1660" / "generator"
             run.mkdir(parents=True)
             for name in ["best.pt", "last.pt", "epoch_0005.pt", "config.json", "notes.txt"]:
                 (run / name).write_text(name, encoding="utf-8")
@@ -45,8 +46,7 @@ class SyncTests(unittest.TestCase):
                 os.utime(path, (path_time, path_time))
 
             files = main_sync.selected_checkpoint_files(
-                root,
-                runs_dir="runs",
+                epochs_dir,
                 include_epochs=True,
                 include_best_last=True,
                 include_configs=True,
@@ -56,8 +56,7 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(names, {"best.pt", "last.pt", "epoch_0005.pt", "config.json"})
 
             best_last = main_sync.selected_checkpoint_files(
-                root,
-                runs_dir="runs",
+                epochs_dir,
                 include_epochs=False,
                 include_best_last=True,
                 include_configs=True,
@@ -69,7 +68,7 @@ class SyncTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as src_tmp, tempfile.TemporaryDirectory() as dst_tmp:
             src = Path(src_tmp)
             dst = Path(dst_tmp)
-            checkpoint = src / "runs" / "gtx1660" / "generator" / "best.pt"
+            checkpoint = src / "gtx1660" / "generator" / "best.pt"
             checkpoint.parent.mkdir(parents=True)
             checkpoint.write_bytes(b"checkpoint")
 
@@ -85,7 +84,7 @@ class SyncTests(unittest.TestCase):
                 remote = f"http://127.0.0.1:{server.server_port}"
                 result = main_sync.upload_file(remote, src, checkpoint, token="token", timeout=5)
                 self.assertEqual(result, "upload")
-                self.assertEqual((dst / "runs" / "gtx1660" / "generator" / "best.pt").read_bytes(), b"checkpoint")
+                self.assertEqual((dst / "gtx1660" / "generator" / "best.pt").read_bytes(), b"checkpoint")
                 result = main_sync.upload_file(remote, src, checkpoint, token="token", timeout=5)
                 self.assertEqual(result, "skip")
             finally:

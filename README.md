@@ -278,30 +278,36 @@ PYTHONPATH=src .venv/bin/python -m handwriting_ai audit-data --config configs/gt
 PYTHONPATH=src .venv/bin/python -m handwriting_ai render --json-path outputs/generated/sample.json --out outputs/generated/sample.png
 ```
 
-## Синхронизация чекпойнтов по локальной сети
+## Передача эпох по локальной сети
 
-Если один ПК обучает модели на видеокарте, а второй нужен для хранения или
-анализа чекпойнтов, используй `main_sync.py`.
+`main_sync.py` - отдельная утилита только для передачи файлов эпох/чекпойнтов.
+Она не синхронизирует весь проект, датасет или исходный код. По умолчанию она
+работает только с папкой `runs/`, которая лежит рядом с `main_sync.py`.
 
-На ПК-приёмнике, без видеокарты:
+На ПК-приёмнике, куда нужно складывать эпохи:
 
 ```bash
-python main_sync.py serve --root /path/to/Handwriting --host 0.0.0.0 --port 8765 --token my_secret
+python main_sync.py serve --token my_secret
 ```
 
-На ПК с видеокартой, в папке проекта:
+Сервер примет файлы в папку:
+
+```text
+runs/
+```
+
+На ПК с видеокартой, где идёт обучение:
 
 ```bash
 python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret
 ```
 
-Замени `192.168.1.20` на IP ПК-приёмника. Скрипт будет раз в минуту искать
-новые или изменённые файлы в `runs/` и отправлять:
+Замени `192.168.1.20` на IP ПК-приёмника. Скрипт будет раз в минуту смотреть
+в локальную папку `runs/` и отправлять новые или изменённые файлы:
 
 - `best.pt`;
 - `last.pt`;
-- `epoch_*.pt`;
-- `config.json`.
+- `epoch_*.pt`.
 
 Если нужны только `best.pt` и `last.pt`, без промежуточных эпох:
 
@@ -313,6 +319,19 @@ python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --
 
 ```bash
 python main_sync.py push --remote http://192.168.1.20:8765 --token my_secret
+```
+
+Если нужно также передавать `config.json` из папок обучения:
+
+```bash
+python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --include-configs
+```
+
+Если папка эпох нестандартная, можно явно указать её на обоих ПК:
+
+```bash
+python main_sync.py serve --epochs-dir /Users/frimo/Documents/PycharmProjects/Handwriting/runs --token my_secret
+python main_sync.py watch --epochs-dir /Users/frimo/Documents/PycharmProjects/Handwriting/runs --remote http://192.168.1.20:8765 --token my_secret
 ```
 
 Файлы, которые изменялись меньше `--min-age` секунд назад, не отправляются,

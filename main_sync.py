@@ -16,6 +16,8 @@ from typing import Any
 
 DEFAULT_TOKEN = os.environ.get("HANDWRITING_SYNC_TOKEN", "handwriting-local-sync")
 CHUNK_SIZE = 1024 * 1024
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_EPOCHS_DIR = PROJECT_ROOT / "runs"
 
 
 def safe_relative_path(value: str) -> Path:
@@ -51,15 +53,14 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[st
 
 
 def selected_checkpoint_files(
-    root: Path,
+    epochs_dir: Path,
     *,
-    runs_dir: str,
     include_epochs: bool,
     include_best_last: bool,
     include_configs: bool,
     min_age: float,
 ) -> list[Path]:
-    base = root / runs_dir
+    base = epochs_dir
     if not base.exists():
         return []
 
@@ -208,13 +209,13 @@ class SyncRequestHandler(BaseHTTPRequestHandler):
 
 
 def run_server(args: argparse.Namespace) -> None:
-    root = Path(args.root).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    epochs_dir = Path(args.epochs_dir).expanduser().resolve()
+    epochs_dir.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), SyncRequestHandler)
-    server.root = root  # type: ignore[attr-defined]
+    server.root = epochs_dir  # type: ignore[attr-defined]
     server.token = args.token  # type: ignore[attr-defined]
-    print(f"Receiving into: {root}")
-    print(f"Listening on:   http://{args.host}:{args.port}")
+    print(f"Receiving epochs into: {epochs_dir}")
+    print(f"Listening on:          http://{args.host}:{args.port}")
     print("Stop with Ctrl+C.")
     try:
         server.serve_forever()
@@ -285,21 +286,20 @@ def upload_file(
 
 
 def run_push_once(args: argparse.Namespace) -> tuple[int, int]:
-    root = Path(args.root).expanduser().resolve()
+    epochs_dir = Path(args.epochs_dir).expanduser().resolve()
     files = selected_checkpoint_files(
-        root,
-        runs_dir=args.runs_dir,
+        epochs_dir,
         include_epochs=not args.best_last_only,
         include_best_last=True,
-        include_configs=True,
+        include_configs=args.include_configs,
         min_age=args.min_age,
     )
     uploaded = 0
     skipped = 0
     for path in files:
-        relative = path.relative_to(root)
+        relative = path.relative_to(epochs_dir)
         try:
-            result = upload_file(args.remote, root, path, token=args.token, timeout=args.timeout)
+            result = upload_file(args.remote, epochs_dir, path, token=args.token, timeout=args.timeout)
         except Exception as exc:
             print(f"ERROR {relative}: {exc}", file=sys.stderr)
             continue
@@ -318,7 +318,7 @@ def run_push(args: argparse.Namespace) -> None:
 
 
 def run_watch(args: argparse.Namespace) -> None:
-    print(f"Watching {Path(args.root).expanduser().resolve() / args.runs_dir}")
+    print(f"Watching epochs: {Path(args.epochs_dir).expanduser().resolve()}")
     print(f"Remote: {args.remote}")
     print("Stop with Ctrl+C.")
     try:
@@ -331,8 +331,11 @@ def run_watch(args: argparse.Namespace) -> None:
 
 def add_sender_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--remote", required=True, help="Receiver URL, for example http://192.168.1.20:8765")
-    parser.add_argument("--root", default=".", help="Project root on this computer.")
-    parser.add_argument("--runs-dir", default="runs", help="Runs directory relative to root.")
+    parser.add_argument(
+        "--epochs-dir",
+        default=str(DEFAULT_EPOCHS_DIR),
+        help="Directory with training checkpoints. Defaults to this project's runs/ folder.",
+    )
     parser.add_argument("--token", default=DEFAULT_TOKEN)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(
@@ -344,26 +347,35 @@ def add_sender_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--best-last-only",
         action="store_true",
-        help="Send only best.pt, last.pt and config.json; skip epoch_*.pt.",
+        help="Send only best.pt and last.pt; skip epoch_*.pt.",
+    )
+    parser.add_argument(
+        "--include-configs",
+        action="store_true",
+        help="Also send config.json files from the epochs directory.",
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Sync training checkpoints between local-network PCs.")
+    parser = argparse.ArgumentParser(description="Transfer training epoch/checkpoint files between local-network PCs.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    serve = sub.add_parser("serve", help="Run receiver on the PC without the GPU.")
-    serve.add_argument("--root", default=".", help="Project root to receive files into.")
+    serve = sub.add_parser("serve", help="Receive checkpoint files into this project's runs/ folder.")
+    serve.add_argument(
+        "--epochs-dir",
+        default=str(DEFAULT_EPOCHS_DIR),
+        help="Directory to receive training checkpoints into. Defaults to this project's runs/ folder.",
+    )
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--token", default=DEFAULT_TOKEN)
     serve.set_defaults(func=run_server)
 
-    push = sub.add_parser("push", help="Send checkpoints once from the GPU PC.")
+    push = sub.add_parser("push", help="Send checkpoint files once from this project's runs/ folder.")
     add_sender_args(push)
     push.set_defaults(func=run_push)
 
-    watch = sub.add_parser("watch", help="Continuously send new/changed checkpoints from the GPU PC.")
+    watch = sub.add_parser("watch", help="Continuously send new/changed checkpoint files from runs/.")
     add_sender_args(watch)
     watch.add_argument("--interval", type=float, default=60.0, help="Scan interval in seconds.")
     watch.set_defaults(func=run_watch)
