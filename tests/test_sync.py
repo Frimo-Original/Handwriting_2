@@ -15,6 +15,12 @@ import main_sync
 
 
 class SyncTests(unittest.TestCase):
+    def test_format_helpers(self) -> None:
+        self.assertEqual(main_sync.format_bytes(512), "512 B")
+        self.assertEqual(main_sync.format_bytes(1024), "1.0 KB")
+        self.assertEqual(main_sync.format_bytes(1024 * 1024), "1.0 MB")
+        self.assertEqual(main_sync.format_rate(2 * 1024 * 1024, 2.0), "1.00 MB/s")
+
     def test_safe_relative_path_rejects_traversal(self) -> None:
         self.assertEqual(main_sync.safe_relative_path("runs/gtx1660/best.pt"), Path("runs/gtx1660/best.pt"))
         with self.assertRaises(ValueError):
@@ -82,11 +88,13 @@ class SyncTests(unittest.TestCase):
             thread.start()
             try:
                 remote = f"http://127.0.0.1:{server.server_port}"
-                result = main_sync.upload_file(remote, src, checkpoint, token="token", timeout=5)
+                result, elapsed = main_sync.upload_file(remote, src, checkpoint, token="token", timeout=5)
                 self.assertEqual(result, "upload")
+                self.assertGreaterEqual(elapsed, 0.0)
                 self.assertEqual((dst / "gtx1660" / "generator" / "best.pt").read_bytes(), b"checkpoint")
-                result = main_sync.upload_file(remote, src, checkpoint, token="token", timeout=5)
+                result, elapsed = main_sync.upload_file(remote, src, checkpoint, token="token", timeout=5)
                 self.assertEqual(result, "skip")
+                self.assertEqual(elapsed, 0.0)
             finally:
                 server.shutdown()
                 server.server_close()

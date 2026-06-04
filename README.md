@@ -336,3 +336,24 @@ python main_sync.py watch --epochs-dir /Users/frimo/Documents/PycharmProjects/Ha
 
 Файлы, которые изменялись меньше `--min-age` секунд назад, не отправляются,
 чтобы не копировать недописанный чекпойнт. По умолчанию `--min-age 5`.
+
+В логе передачи видно, что именно произошло:
+
+```text
+Scan 14:25:03: /.../runs | files=2 | mode=best/last only
+FILE gtx1660/generator/best.pt | 63.0 MB
+UP   gtx1660/generator/best.pt | 63.0 MB | 4.21s | 14.96 MB/s
+FILE gtx1660/generator/last.pt | 63.0 MB
+SKIP gtx1660/generator/last.pt | 63.0 MB | already on receiver
+Done. uploaded=1, skipped=1, found=2, sent=63.0 MB, elapsed=4.25s, avg=14.82 MB/s
+```
+
+`UP` означает, что файл передан. `SKIP` означает, что такой же файл уже есть
+на принимающем ПК. Скорость считается по каждому переданному файлу и по всему
+проходу.
+
+На принимающем ПК во время загрузки будет строка вида:
+
+```text
+RECV gtx1660/generator/best.pt | 63.0 MB | 4.18s | 15.07 MB/s
+```

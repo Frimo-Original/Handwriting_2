@@ -20,6 +20,23 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_EPOCHS_DIR = PROJECT_ROOT / "runs"
 
 
+def format_bytes(value: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024.0 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+
+
+def format_rate(bytes_count: int, seconds: float) -> str:
+    if seconds <= 0:
+        return "instant"
+    return f"{bytes_count / 1024 / 1024 / seconds:.2f} MB/s"
+
+
 def safe_relative_path(value: str) -> Path:
     raw = value.replace("\\", "/")
     if raw.startswith("/") or raw.startswith("~"):
@@ -166,6 +183,7 @@ class SyncRequestHandler(BaseHTTPRequestHandler):
 
         received = 0
         digest = hashlib.sha256()
+        started = time.perf_counter()
         try:
             with tmp.open("wb") as fh:
                 remaining = expected_size
@@ -201,6 +219,12 @@ class SyncRequestHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"ok": False, "error": str(exc)})
             return
 
+        elapsed = time.perf_counter() - started
+        print(
+            f"RECV {relative.as_posix()} | {format_bytes(received)} | "
+            f"{elapsed:.2f}s | {format_rate(received, elapsed)}",
+            flush=True,
+        )
         json_response(
             self,
             200,
@@ -258,12 +282,12 @@ def upload_file(
     *,
     token: str,
     timeout: float,
-) -> str:
+) -> tuple[str, float]:
     relative = path.relative_to(root)
     digest = file_sha256(path)
     size = path.stat().st_size
     if remote_matches(remote, relative, token=token, size=size, sha256=digest, timeout=timeout):
-        return "skip"
+        return "skip", 0.0
 
     path_query = urllib.parse.quote(relative.as_posix())
     url = f"{remote.rstrip('/')}/upload?path={path_query}"
@@ -278,11 +302,13 @@ def upload_file(
             "Content-Type": "application/octet-stream",
         },
     )
+    started = time.perf_counter()
     with urllib.request.urlopen(request, timeout=timeout) as response:
         payload = json.loads(response.read().decode("utf-8"))
+    elapsed = time.perf_counter() - started
     if not payload.get("ok"):
         raise RuntimeError(f"Upload failed for {relative}: {payload}")
-    return "upload"
+    return "upload", elapsed
 
 
 def run_push_once(args: argparse.Namespace) -> tuple[int, int]:
@@ -296,20 +322,40 @@ def run_push_once(args: argparse.Namespace) -> tuple[int, int]:
     )
     uploaded = 0
     skipped = 0
+    uploaded_bytes = 0
+    started = time.perf_counter()
+    print(
+        f"Scan {time.strftime('%H:%M:%S')}: {epochs_dir} | files={len(files)} | "
+        f"mode={'best/last only' if args.best_last_only else 'all epochs'}",
+        flush=True,
+    )
     for path in files:
         relative = path.relative_to(epochs_dir)
+        size = path.stat().st_size
+        print(f"FILE {relative} | {format_bytes(size)}", flush=True)
         try:
-            result = upload_file(args.remote, epochs_dir, path, token=args.token, timeout=args.timeout)
+            result, elapsed = upload_file(args.remote, epochs_dir, path, token=args.token, timeout=args.timeout)
         except Exception as exc:
-            print(f"ERROR {relative}: {exc}", file=sys.stderr)
+            print(f"ERROR {relative}: {exc}", file=sys.stderr, flush=True)
             continue
         if result == "upload":
             uploaded += 1
-            print(f"UP   {relative} ({path.stat().st_size / 1024 / 1024:.1f} MB)")
+            uploaded_bytes += size
+            print(
+                f"UP   {relative} | {format_bytes(size)} | "
+                f"{elapsed:.2f}s | {format_rate(size, elapsed)}",
+                flush=True,
+            )
         else:
             skipped += 1
-            print(f"SKIP {relative}")
-    print(f"Done. uploaded={uploaded}, skipped={skipped}, found={len(files)}")
+            print(f"SKIP {relative} | {format_bytes(size)} | already on receiver", flush=True)
+    total_elapsed = time.perf_counter() - started
+    print(
+        f"Done. uploaded={uploaded}, skipped={skipped}, found={len(files)}, "
+        f"sent={format_bytes(uploaded_bytes)}, elapsed={total_elapsed:.2f}s, "
+        f"avg={format_rate(uploaded_bytes, total_elapsed)}",
+        flush=True,
+    )
     return uploaded, skipped
 
 
