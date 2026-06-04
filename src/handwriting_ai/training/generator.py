@@ -10,7 +10,7 @@ from handwriting_ai.config import ExperimentConfig
 from handwriting_ai.data import NormalizationStats, build_dataloaders
 from handwriting_ai.data.codec import VOCAB_TOKENS
 from handwriting_ai.latent_stats import LatentNormalizationStats, normalize_latents
-from handwriting_ai.models import InkAutoencoder, LatentFlowTransformer
+from handwriting_ai.models import InkAutoencoder, LatentRegressorTransformer
 from handwriting_ai.seed import resolve_device, seed_everything
 from handwriting_ai.training.common import (
     average_metric_dicts,
@@ -20,18 +20,18 @@ from handwriting_ai.training.common import (
     to_plain,
     write_json,
 )
-from handwriting_ai.training.losses import flow_matching_loss
+from handwriting_ai.training.losses import latent_regression_loss
 
 
-def _flow_kwargs(config: ExperimentConfig, latent_dim: int) -> dict[str, int | float]:
-    flow = config.generator
+def _generator_kwargs(config: ExperimentConfig, latent_dim: int) -> dict[str, int | float]:
+    generator = config.generator
     return {
         "latent_dim": latent_dim,
-        "hidden_dim": flow.hidden_dim,
-        "text_dim": flow.text_dim,
-        "layers": flow.layers,
-        "n_heads": flow.n_heads,
-        "dropout": flow.dropout,
+        "hidden_dim": generator.hidden_dim,
+        "text_dim": generator.text_dim,
+        "layers": generator.layers,
+        "n_heads": generator.n_heads,
+        "dropout": generator.dropout,
     }
 
 
@@ -86,7 +86,7 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
     run_dir.mkdir(parents=True, exist_ok=True)
     write_json(run_dir / "config.json", config)
 
-    model = LatentFlowTransformer(**_flow_kwargs(config, autoencoder.latent_dim)).to(device)
+    model = LatentRegressorTransformer(**_generator_kwargs(config, autoencoder.latent_dim)).to(device)
     model = maybe_compile(model, config.hardware.torch_compile)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -104,7 +104,7 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
         model.train()
         optimizer.zero_grad(set_to_none=True)
         metrics_list: list[dict[str, float]] = []
-        progress = tqdm(train_loader, desc=f"Flow train {epoch}", leave=False)
+        progress = tqdm(train_loader, desc=f"Regressor train {epoch}", leave=False)
         for step, batch in enumerate(progress, start=1):
             batch = batch.to(device)
             with torch.no_grad():
@@ -115,7 +115,7 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
                 )
                 latents = normalize_latents(latents, latent_stats) * latent_mask.unsqueeze(-1)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
-                loss, metrics = flow_matching_loss(
+                loss, metrics = latent_regression_loss(
                     model,
                     latents,
                     latent_mask,
@@ -138,15 +138,16 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
         val_metrics = evaluate_generator(model, autoencoder, val_loader, config, device, latent_stats)
         train_avg = average_metric_dicts(metrics_list)
         print(
-            f"Flow epoch {epoch}: train_loss={train_avg['loss']:.4f} "
-            f"val_loss={val_metrics['loss']:.4f} val_velocity={val_metrics['velocity']:.4f}"
+            f"Regressor epoch {epoch}: train_loss={train_avg['loss']:.4f} "
+            f"val_loss={val_metrics['loss']:.4f} val_latent={val_metrics['latent']:.4f}"
         )
 
         payload = {
             "epoch": epoch,
             "model_state": model_state_dict(model),
             "optimizer_state": optimizer.state_dict(),
-            "model_kwargs": _flow_kwargs(config, autoencoder.latent_dim),
+            "model_type": "latent_regressor",
+            "model_kwargs": _generator_kwargs(config, autoencoder.latent_dim),
             "autoencoder_checkpoint": str(autoencoder_checkpoint),
             "normalization": stats.to_dict(),
             "latent_normalization": latent_stats.to_dict(),
@@ -184,7 +185,7 @@ def evaluate_generator(
         )
         if latent_stats is not None:
             latents = normalize_latents(latents, latent_stats) * latent_mask.unsqueeze(-1)
-        _, metrics = flow_matching_loss(
+        _, metrics = latent_regression_loss(
             model,
             latents,
             latent_mask,

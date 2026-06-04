@@ -13,8 +13,18 @@ bootstrap()
 from handwriting_ai.checkpoint import save_checkpoint
 from handwriting_ai.data.codec import VOCAB_TOKENS
 from handwriting_ai.inference import generate_points
-from handwriting_ai.models import InkAutoencoder, LatentFlowTransformer, TrajectoryRecognizer
-from handwriting_ai.training.losses import autoencoder_loss, flow_matching_loss, recognizer_ctc_loss
+from handwriting_ai.models import (
+    InkAutoencoder,
+    LatentFlowTransformer,
+    LatentRegressorTransformer,
+    TrajectoryRecognizer,
+)
+from handwriting_ai.training.losses import (
+    autoencoder_loss,
+    flow_matching_loss,
+    latent_regression_loss,
+    recognizer_ctc_loss,
+)
 
 
 class ModelTests(unittest.TestCase):
@@ -70,6 +80,35 @@ class ModelTests(unittest.TestCase):
         )
         loss.backward()
         self.assertIn("velocity", metrics)
+
+    def test_latent_regressor_shapes_and_backward(self) -> None:
+        model = LatentRegressorTransformer(
+            latent_dim=16,
+            hidden_dim=32,
+            text_dim=32,
+            layers=2,
+            n_heads=4,
+            dropout=0.0,
+        )
+        latents = torch.randn(2, 12, 16)
+        latent_lengths = torch.tensor([12, 9], dtype=torch.long)
+        latent_mask = torch.arange(12).unsqueeze(0) < latent_lengths.unsqueeze(1)
+        text = torch.tensor([[10, 11, 12, 89], [13, 14, 89, 90]], dtype=torch.long)
+        text_mask = text != 90
+        loss, metrics = latent_regression_loss(
+            model,
+            latents,
+            latent_mask,
+            latent_lengths,
+            text,
+            text_mask,
+            length_loss_weight=0.1,
+        )
+        loss.backward()
+        self.assertIn("latent", metrics)
+        sampled, sampled_mask = model.sample(text, text_mask, latent_length=7)
+        self.assertEqual(sampled.shape, (2, 7, 16))
+        self.assertEqual(sampled_mask.shape, (2, 7))
 
     def test_recognizer_shapes_and_backward(self) -> None:
         recognizer = TrajectoryRecognizer(hidden_dim=32, layers=1, dropout=0.0)
@@ -145,6 +184,69 @@ class ModelTests(unittest.TestCase):
                 device=torch.device("cpu"),
                 steps=1,
                 latent_length=4,
+            )
+            self.assertEqual(points.shape, (16, 3))
+            self.assertEqual(int(points[-1, 2]), 1)
+
+    def test_inference_with_latent_regressor_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ae = InkAutoencoder(
+                hidden_dim=16,
+                latent_dim=8,
+                downsample_factor=4,
+                bottleneck_layers=0,
+                n_heads=1,
+                dropout=0.0,
+            )
+            generator = LatentRegressorTransformer(
+                latent_dim=8,
+                hidden_dim=16,
+                text_dim=16,
+                layers=1,
+                n_heads=1,
+                dropout=0.0,
+            )
+            ae_path = tmp_path / "ae.pt"
+            generator_path = tmp_path / "regressor.pt"
+            save_checkpoint(
+                ae_path,
+                model_state=ae.state_dict(),
+                model_kwargs={
+                    "input_dim": 3,
+                    "hidden_dim": 16,
+                    "latent_dim": 8,
+                    "downsample_factor": 4,
+                    "bottleneck_layers": 0,
+                    "n_heads": 1,
+                    "dropout": 0.0,
+                },
+                normalization={"mean": [0.0, 0.0], "std": [1.0, 1.0]},
+                vocab_tokens=VOCAB_TOKENS,
+            )
+            save_checkpoint(
+                generator_path,
+                model_type="latent_regressor",
+                model_state=generator.state_dict(),
+                model_kwargs={
+                    "latent_dim": 8,
+                    "hidden_dim": 16,
+                    "text_dim": 16,
+                    "layers": 1,
+                    "n_heads": 1,
+                    "dropout": 0.0,
+                },
+                latent_normalization={"mean": [0.0] * 8, "std": [1.0] * 8},
+                normalization={"mean": [0.0, 0.0], "std": [1.0, 1.0]},
+                vocab_tokens=VOCAB_TOKENS,
+            )
+            points = generate_points(
+                text="тест",
+                autoencoder_checkpoint=ae_path,
+                generator_checkpoint=generator_path,
+                device=torch.device("cpu"),
+                latent_length=4,
+                temperature=0.0,
             )
             self.assertEqual(points.shape, (16, 3))
             self.assertEqual(int(points[-1, 2]), 1)

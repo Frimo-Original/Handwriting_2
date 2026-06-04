@@ -13,6 +13,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from handwriting_ai.config import ExperimentConfig, load_config
+from handwriting_ai.checkpoint import load_checkpoint
 from handwriting_ai.inference import generate_points, save_points_json, save_points_png
 from handwriting_ai.seed import resolve_device
 
@@ -63,6 +64,21 @@ def require_checkpoint(path: Path, *, purpose: str) -> Path:
     return path
 
 
+def validate_generator_checkpoint(path: Path, *, allow_legacy_flow: bool) -> None:
+    payload = load_checkpoint(path, map_location="cpu")
+    model_type = payload.get("model_type", "latent_flow")
+    if model_type == "latent_regressor":
+        return
+    if allow_legacy_flow and model_type == "latent_flow":
+        print(f"Warning: using legacy flow generator checkpoint: {path}")
+        return
+    raise ValueError(
+        f"Generator checkpoint is legacy or unsupported: {path}\n"
+        "Retrain the generator with: python main_training.py --stage generator\n"
+        "If you explicitly want to inspect the old flow checkpoint, pass --allow-legacy-flow."
+    )
+
+
 def run_generation(args: argparse.Namespace) -> None:
     text = args.text_flag or args.text or "Привет, это тестовая строка."
     config_path = resolve_config_path(args.profile, args.config)
@@ -72,6 +88,7 @@ def run_generation(args: argparse.Namespace) -> None:
     generator_checkpoint = Path(args.generator_checkpoint).expanduser() if args.generator_checkpoint else default_generator_checkpoint(config)
     require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
     require_checkpoint(generator_checkpoint, purpose="Generator")
+    validate_generator_checkpoint(generator_checkpoint, allow_legacy_flow=args.allow_legacy_flow)
 
     out_dir = Path(args.out_dir).expanduser()
     out_json, out_png = resolve_output_paths(out_dir, args.name, text)
@@ -108,6 +125,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="Explicit TOML config path. Overrides --profile config path.")
     parser.add_argument("--autoencoder-checkpoint", help="Defaults to runs/<profile>/autoencoder/best.pt.")
     parser.add_argument("--generator-checkpoint", help="Defaults to runs/<profile>/generator/best.pt.")
+    parser.add_argument(
+        "--allow-legacy-flow",
+        action="store_true",
+        help="Allow old LatentFlowTransformer checkpoints. New training uses latent_regressor.",
+    )
     parser.add_argument("--out-dir", default="outputs/generated", help="Directory for JSON and PNG outputs.")
     parser.add_argument("--name", help="Output filename without extension.")
     parser.add_argument("--device", help="cpu, cuda, cuda:0, or auto. Defaults to config hardware.device.")
@@ -130,4 +152,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -12,7 +12,7 @@ from handwriting_ai.data.dataset import NormalizationStats
 from handwriting_ai.data.rendering import render_points_to_image
 from handwriting_ai.data.transforms import deltas_to_points
 from handwriting_ai.latent_stats import LatentNormalizationStats, denormalize_latents
-from handwriting_ai.models import InkAutoencoder, LatentFlowTransformer
+from handwriting_ai.models import InkAutoencoder, LatentFlowTransformer, LatentRegressorTransformer
 
 
 def _load_autoencoder(path: str | Path, device: torch.device) -> tuple[InkAutoencoder, NormalizationStats]:
@@ -23,9 +23,18 @@ def _load_autoencoder(path: str | Path, device: torch.device) -> tuple[InkAutoen
     return model, NormalizationStats.from_dict(payload["normalization"])
 
 
-def _load_generator(path: str | Path, device: torch.device) -> tuple[LatentFlowTransformer, LatentNormalizationStats | None]:
+def _load_generator(
+    path: str | Path,
+    device: torch.device,
+) -> tuple[LatentFlowTransformer | LatentRegressorTransformer, LatentNormalizationStats | None]:
     payload = load_checkpoint(path, map_location=device)
-    model = LatentFlowTransformer(**payload["model_kwargs"]).to(device)
+    model_type = payload.get("model_type", "latent_flow")
+    if model_type == "latent_regressor":
+        model = LatentRegressorTransformer(**payload["model_kwargs"]).to(device)
+    elif model_type == "latent_flow":
+        model = LatentFlowTransformer(**payload["model_kwargs"]).to(device)
+    else:
+        raise ValueError(f"Unknown generator model_type in checkpoint {path}: {model_type!r}")
     model.load_state_dict(payload["model_state"])
     model.eval()
     return model, LatentNormalizationStats.from_dict(payload.get("latent_normalization"))

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from pathlib import Path
 
 from _bootstrap import bootstrap
 
 bootstrap()
 
+from handwriting_ai.checkpoint import save_checkpoint
 import main_generate
 import main_evaluate
 import main_training
@@ -27,6 +29,18 @@ class EntrypointTests(unittest.TestCase):
         args = main_evaluate.build_parser().parse_args([])
         self.assertEqual(args.profile, "gtx1660")
         self.assertEqual(args.stage, "all")
+
+    def test_current_generator_checkpoint_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "generator.pt"
+            save_checkpoint(path, model_type="latent_flow")
+            self.assertFalse(main_training.is_current_generator_checkpoint(path))
+            save_checkpoint(
+                path,
+                model_type="latent_regressor",
+                latent_normalization={"mean": [0.0], "std": [1.0]},
+            )
+            self.assertTrue(main_training.is_current_generator_checkpoint(path))
 
 
 if __name__ == "__main__":

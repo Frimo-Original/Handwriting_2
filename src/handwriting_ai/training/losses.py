@@ -6,6 +6,7 @@ from torch.nn import functional as F
 
 from handwriting_ai.models.autoencoder import AutoencoderOutput
 from handwriting_ai.models.flow import LatentFlowTransformer
+from handwriting_ai.models.latent_regressor import LatentRegressorTransformer
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -122,6 +123,31 @@ def flow_matching_loss(
     }
 
 
+def latent_regression_loss(
+    model: LatentRegressorTransformer,
+    latents: torch.Tensor,
+    latent_mask: torch.Tensor,
+    latent_lengths: torch.Tensor,
+    text: torch.Tensor,
+    text_mask: torch.Tensor,
+    *,
+    length_loss_weight: float,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    output = model(text, text_mask, latent_lengths=latent_lengths)
+    latent_loss = masked_mean(
+        F.smooth_l1_loss(output.latents, latents, reduction="none"),
+        latent_mask,
+    )
+    length_target = torch.log1p(latent_lengths.float())
+    length_loss = F.mse_loss(output.length_log, length_target)
+    loss = latent_loss + length_loss_weight * length_loss
+    return loss, {
+        "loss": float(loss.detach().cpu()),
+        "latent": float(latent_loss.detach().cpu()),
+        "length": float(length_loss.detach().cpu()),
+    }
+
+
 def recognizer_ctc_loss(
     log_probs: torch.Tensor,
     output_lengths: torch.Tensor,
@@ -136,4 +162,3 @@ def recognizer_ctc_loss(
         targets.append(text[row, : text_lengths[row]].to(torch.long))
     flat_targets = torch.cat(targets, dim=0)
     return criterion(log_probs, flat_targets, output_lengths, text_lengths)
-

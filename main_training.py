@@ -11,6 +11,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from handwriting_ai.config import ExperimentConfig, load_config
+from handwriting_ai.checkpoint import load_checkpoint
 from handwriting_ai.data.dataset import dataset_summary
 from handwriting_ai.training.autoencoder import train_autoencoder
 from handwriting_ai.training.generator import train_generator
@@ -64,6 +65,16 @@ def require_checkpoint(path: Path, *, purpose: str) -> Path:
     return path
 
 
+def is_current_generator_checkpoint(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        payload = load_checkpoint(path, map_location="cpu")
+    except Exception:
+        return False
+    return payload.get("model_type") == "latent_regressor" and "latent_normalization" in payload
+
+
 def run_training(args: argparse.Namespace) -> None:
     config_path = resolve_config_path(args.profile, args.config)
     config = load_config(config_path)
@@ -93,9 +104,11 @@ def run_training(args: argparse.Namespace) -> None:
             autoencoder_checkpoint = default_autoencoder_checkpoint(config)
         require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
         generator_path = config.run.out_dir / "generator" / "best.pt"
-        if args.skip_existing and generator_path.exists():
+        if args.skip_existing and is_current_generator_checkpoint(generator_path):
             print(f"Generator already exists, skipping: {generator_path}")
         else:
+            if args.skip_existing and generator_path.exists():
+                print(f"Generator checkpoint is legacy or incomplete, retraining: {generator_path}")
             train_generator(config, autoencoder_checkpoint)
 
     if args.stage in {"recognizer", "all"}:
@@ -152,4 +165,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-
