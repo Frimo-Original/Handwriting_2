@@ -42,7 +42,7 @@ kl_weight = 0.0002
 pen_weight = 0.35
 curvature_weight = 0.05
 render_weight = 0.0
-checkpoint_every = 20
+checkpoint_every = 40
 eval_every = 5
 
 [generator]
