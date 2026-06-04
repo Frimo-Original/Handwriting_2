@@ -51,6 +51,10 @@ def _generator_loss_kwargs(
         "pen_weight": generator.decoded_pen_weight,
         "pen_pos_weight": generator.decoded_pen_pos_weight,
         "curvature_weight": generator.decoded_curvature_weight,
+        "render_weight": generator.decoded_render_weight,
+        "std_weight": generator.decoded_std_weight,
+        "bbox_weight": generator.decoded_bbox_weight,
+        "pen_dice_weight": generator.decoded_pen_dice_weight,
         "length_loss_weight": generator.length_loss_weight,
     }
 
@@ -63,6 +67,10 @@ def _loss_weight_payload(config: ExperimentConfig) -> dict[str, float]:
         "decoded_pen_weight": generator.decoded_pen_weight,
         "decoded_pen_pos_weight": generator.decoded_pen_pos_weight,
         "decoded_curvature_weight": generator.decoded_curvature_weight,
+        "decoded_render_weight": generator.decoded_render_weight,
+        "decoded_std_weight": generator.decoded_std_weight,
+        "decoded_bbox_weight": generator.decoded_bbox_weight,
+        "decoded_pen_dice_weight": generator.decoded_pen_dice_weight,
         "length_loss_weight": generator.length_loss_weight,
     }
 
@@ -137,7 +145,9 @@ def train_generator(config: ExperimentConfig, autoencoder_checkpoint: str | Path
         print(
             f"Trajectory epoch {epoch}: train_loss={train_avg['loss']:.4f} "
             f"val_loss={val_metrics['loss']:.4f} val_xy={val_metrics['xy']:.4f} "
-            f"val_path={val_metrics['path']:.4f} val_pen={val_metrics['pen']:.4f}"
+            f"val_path={val_metrics['path']:.4f} val_pen={val_metrics['pen']:.4f} "
+            f"val_render={val_metrics['render']:.4f} val_std={val_metrics['std']:.4f} "
+            f"val_bbox={val_metrics['bbox']:.4f}"
         )
 
         payload = {

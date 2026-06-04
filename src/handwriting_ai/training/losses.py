@@ -44,6 +44,95 @@ def cumulative_xy_loss(pred_xy: torch.Tensor, target_xy: torch.Tensor, mask: tor
     )
 
 
+def per_sample_delta_std_loss(pred_xy: torch.Tensor, target_xy: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    expanded = mask.unsqueeze(-1)
+    lengths = expanded.sum(dim=1).clamp(min=1).to(pred_xy.dtype)
+    pred_mean = (pred_xy * expanded).sum(dim=1) / lengths
+    target_mean = (target_xy * expanded).sum(dim=1) / lengths
+    pred_var = (((pred_xy - pred_mean.unsqueeze(1)) * expanded) ** 2).sum(dim=1) / lengths
+    target_var = (((target_xy - target_mean.unsqueeze(1)) * expanded) ** 2).sum(dim=1) / lengths
+    pred_std = torch.sqrt(pred_var.clamp(min=1e-8))
+    target_std = torch.sqrt(target_var.clamp(min=1e-8))
+    return F.smooth_l1_loss(torch.log1p(pred_std), torch.log1p(target_std))
+
+
+def path_bbox_loss(pred_xy: torch.Tensor, target_xy: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    pred_path = torch.cumsum(pred_xy, dim=1)
+    target_path = torch.cumsum(target_xy, dim=1)
+    expanded = mask.unsqueeze(-1)
+    inf = torch.finfo(pred_xy.dtype).max
+    pred_min = pred_path.masked_fill(~expanded, inf).min(dim=1).values
+    pred_max = pred_path.masked_fill(~expanded, -inf).max(dim=1).values
+    target_min = target_path.masked_fill(~expanded, inf).min(dim=1).values
+    target_max = target_path.masked_fill(~expanded, -inf).max(dim=1).values
+    pred_range = (pred_max - pred_min).clamp(min=1e-6)
+    target_range = (target_max - target_min).clamp(min=1e-6)
+    return F.smooth_l1_loss(torch.log1p(pred_range), torch.log1p(target_range))
+
+
+def pen_dice_loss(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    probs = torch.sigmoid(logits) * mask
+    target = target * mask
+    intersection = (probs * target).sum(dim=1)
+    denom = probs.sum(dim=1) + target.sum(dim=1)
+    dice = (2.0 * intersection + 1.0) / (denom + 1.0)
+    return (1.0 - dice).mean()
+
+
+def _soft_segment_raster(
+    xy: torch.Tensor,
+    visible: torch.Tensor,
+    mask: torch.Tensor,
+    reference_xy: torch.Tensor,
+    *,
+    image_size: int = 48,
+    sigma: float = 0.035,
+    max_segments: int = 384,
+) -> torch.Tensor:
+    if xy.shape[1] < 2:
+        return xy.new_zeros((xy.shape[0], image_size, image_size))
+    device = xy.device
+    coords = torch.linspace(0.0, 1.0, image_size, device=device)
+    yy, xx = torch.meshgrid(coords, coords, indexing="ij")
+    grid = torch.stack([xx, yy], dim=-1).view(1, 1, image_size, image_size, 2)
+    rasters = []
+    segment_mask = mask[:, 1:] & mask[:, :-1]
+    segment_xy = 0.5 * (xy[:, 1:] + xy[:, :-1])
+    reference_mask = mask.unsqueeze(-1)
+    inf = torch.finfo(xy.dtype).max
+    ref_min = reference_xy.masked_fill(~reference_mask, inf).min(dim=1).values
+    ref_max = reference_xy.masked_fill(~reference_mask, -inf).max(dim=1).values
+    ref_span = (ref_max - ref_min).clamp(min=1e-3)
+
+    for row in range(xy.shape[0]):
+        valid_mask = segment_mask[row]
+        valid = segment_xy[row, valid_mask]
+        weights = visible[row, :-1][valid_mask].clamp(0.0, 1.0)
+        if valid.numel() == 0 or weights.sum() <= 1e-6:
+            rasters.append(torch.zeros(image_size, image_size, device=device, dtype=xy.dtype))
+            continue
+        if len(valid) > max_segments:
+            idx = torch.linspace(0, len(valid) - 1, max_segments, device=device).long()
+            valid = valid[idx]
+            weights = weights[idx]
+        valid = (valid - ref_min[row].view(1, 2)) / ref_span[row].view(1, 2)
+        diff = grid - valid.view(1, -1, 1, 1, 2)
+        dist2 = (diff * diff).sum(dim=-1)
+        heat = torch.exp(-dist2 / (2 * sigma * sigma)) * weights.view(1, -1, 1, 1)
+        rasters.append(heat.amax(dim=1).squeeze(0))
+    return torch.stack(rasters, dim=0)
+
+
+def pen_aware_render_loss(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    pred_xy = torch.cumsum(pred[..., :2], dim=1)
+    target_xy = torch.cumsum(target[..., :2], dim=1)
+    pred_visible = 1.0 - torch.sigmoid(pred[..., 2])
+    target_visible = 1.0 - target[..., 2].clamp(0.0, 1.0)
+    pred_image = _soft_segment_raster(pred_xy, pred_visible, mask, reference_xy=target_xy)
+    target_image = _soft_segment_raster(target_xy, target_visible, mask, reference_xy=target_xy)
+    return F.l1_loss(pred_image, target_image)
+
+
 def _soft_raster(points_xy: torch.Tensor, mask: torch.Tensor, image_size: int = 64, sigma: float = 0.025) -> torch.Tensor:
     batch, _, _ = points_xy.shape
     device = points_xy.device
@@ -247,6 +336,10 @@ def trajectory_generator_loss(
     pen_weight: float,
     pen_pos_weight: float,
     curvature_weight: float,
+    render_weight: float = 0.0,
+    std_weight: float = 0.0,
+    bbox_weight: float = 0.0,
+    pen_dice_weight: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     output = model(text, text_mask, point_lengths=point_lengths)
     pred = output.deltas
@@ -266,6 +359,26 @@ def trajectory_generator_loss(
         point_mask,
     )
     curve = curvature_loss(pred[..., :2], points[..., :2], point_mask)
+    render = (
+        pen_aware_render_loss(pred, points, point_mask)
+        if render_weight > 0.0
+        else pred.new_tensor(0.0)
+    )
+    delta_std = (
+        per_sample_delta_std_loss(pred[..., :2], points[..., :2], point_mask)
+        if std_weight > 0.0
+        else pred.new_tensor(0.0)
+    )
+    bbox = (
+        path_bbox_loss(pred[..., :2], points[..., :2], point_mask)
+        if bbox_weight > 0.0
+        else pred.new_tensor(0.0)
+    )
+    pen_dice = (
+        pen_dice_loss(pred[..., 2], points[..., 2], point_mask)
+        if pen_dice_weight > 0.0
+        else pred.new_tensor(0.0)
+    )
     length_target = torch.log1p(point_lengths.float())
     length = F.mse_loss(output.length_log, length_target)
     loss = (
@@ -273,6 +386,10 @@ def trajectory_generator_loss(
         + path_weight * path
         + pen_weight * pen
         + curvature_weight * curve
+        + render_weight * render
+        + std_weight * delta_std
+        + bbox_weight * bbox
+        + pen_dice_weight * pen_dice
         + length_loss_weight * length
     )
     return loss, {
@@ -281,6 +398,10 @@ def trajectory_generator_loss(
         "path": float(path.detach().cpu()),
         "pen": float(pen.detach().cpu()),
         "curvature": float(curve.detach().cpu()),
+        "render": float(render.detach().cpu()),
+        "std": float(delta_std.detach().cpu()),
+        "bbox": float(bbox.detach().cpu()),
+        "pen_dice": float(pen_dice.detach().cpu()),
         "length": float(length.detach().cpu()),
     }
 

@@ -84,6 +84,10 @@ class GeneratorConfig:
     decoded_pen_weight: float = 0.75
     decoded_pen_pos_weight: float = 8.0
     decoded_curvature_weight: float = 0.10
+    decoded_render_weight: float = 0.0
+    decoded_std_weight: float = 0.0
+    decoded_bbox_weight: float = 0.0
+    decoded_pen_dice_weight: float = 0.0
 
 
 @dataclass(frozen=True)
