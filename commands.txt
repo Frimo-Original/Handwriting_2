@@ -24,4 +24,4 @@ Get-Content $HOME\key.pub | Add-Content $HOME\.ssh\authorized_keys
 Remove-Item $HOME\key.pub
 
 
-Test-NetConnection 192.168.1.20 -Port 22
+Test-NetConnection 10.8.1.6 -Port 22

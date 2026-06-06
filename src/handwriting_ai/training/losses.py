@@ -7,6 +7,7 @@ from torch.nn import functional as F
 from handwriting_ai.latent_stats import LatentNormalizationStats, denormalize_latents
 from handwriting_ai.models.aligned_flow import AlignedLatentFlow
 from handwriting_ai.models.autoencoder import AutoencoderOutput
+from handwriting_ai.models.content_flow import ContentAlignedLatentFlow
 from handwriting_ai.models.flow import LatentFlowTransformer
 from handwriting_ai.models.latent_regressor import LatentRegressorTransformer
 from handwriting_ai.models.trajectory_generator import TrajectoryGenerator
@@ -203,6 +204,33 @@ def autoencoder_loss(
     return loss, metrics
 
 
+def semantic_ctc_loss(
+    recognizer: nn.Module,
+    points: torch.Tensor,
+    point_lengths: torch.Tensor,
+    text: torch.Tensor,
+    text_lengths: torch.Tensor,
+    *,
+    blank_id: int,
+) -> torch.Tensor:
+    recognizer_points = trajectory_for_recognizer(points)
+    log_probs, output_lengths = recognizer(recognizer_points, point_lengths)
+    return recognizer_ctc_loss(
+        log_probs,
+        output_lengths,
+        text,
+        text_lengths,
+        blank_id=blank_id,
+    )
+
+
+def trajectory_for_recognizer(points: torch.Tensor) -> torch.Tensor:
+    return torch.cat(
+        [points[..., :2], torch.sigmoid(points[..., 2:3])],
+        dim=-1,
+    )
+
+
 def flow_matching_loss(
     model: LatentFlowTransformer,
     latents: torch.Tensor,
@@ -281,6 +309,138 @@ def aligned_flow_matching_loss(
         "duration": float(duration.detach().cpu()),
         "frames_per_token": float(
             (latent_lengths.float() / text_lengths.float().clamp(min=1.0)).mean().detach().cpu()
+        ),
+    }
+
+
+def content_aligned_flow_loss(
+    model: ContentAlignedLatentFlow,
+    latents: torch.Tensor,
+    latent_mask: torch.Tensor,
+    latent_lengths: torch.Tensor,
+    durations: torch.Tensor,
+    text: torch.Tensor,
+    text_mask: torch.Tensor,
+    text_lengths: torch.Tensor,
+    target_points: torch.Tensor,
+    point_mask: torch.Tensor,
+    point_lengths: torch.Tensor,
+    *,
+    autoencoder: nn.Module,
+    latent_normalization: LatentNormalizationStats,
+    recognizer: nn.Module | None,
+    duration_loss_weight: float,
+    endpoint_latent_weight: float,
+    decoded_xy_weight: float,
+    decoded_path_weight: float,
+    decoded_pen_weight: float,
+    decoded_pen_pos_weight: float,
+    decoded_curvature_weight: float,
+    semantic_weight: float,
+    blank_id: int,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    noise = torch.randn_like(latents) * latent_mask.unsqueeze(-1)
+    times = torch.rand(latents.shape[0], device=latents.device)
+    time_view = times.view(-1, 1, 1)
+    noisy = ((1.0 - time_view) * noise + time_view * latents) * latent_mask.unsqueeze(-1)
+    target_velocity = (latents - noise) * latent_mask.unsqueeze(-1)
+    output = model.training_forward(
+        noisy,
+        times,
+        text,
+        text_mask,
+        durations,
+    )
+    velocity = masked_mean(
+        F.mse_loss(output.velocity, target_velocity, reduction="none"),
+        latent_mask,
+    ) / latents.shape[-1]
+    duration_target = torch.log1p(durations.float())
+    duration = masked_mean(
+        F.smooth_l1_loss(output.log_durations, duration_target, reduction="none"),
+        durations > 0,
+    )
+
+    predicted_endpoint = (
+        noisy + (1.0 - time_view) * output.velocity
+    ) * latent_mask.unsqueeze(-1)
+    endpoint_latent = masked_mean(
+        F.smooth_l1_loss(predicted_endpoint, latents, reduction="none"),
+        latent_mask,
+    )
+    decoder_latents = denormalize_latents(
+        predicted_endpoint,
+        latent_normalization,
+    ) * latent_mask.unsqueeze(-1)
+    decoded = autoencoder.decode(
+        decoder_latents,
+        target_length=target_points.shape[1],
+    )
+    decoded_xy = masked_mean(
+        F.smooth_l1_loss(
+            decoded[..., :2],
+            target_points[..., :2],
+            reduction="none",
+        ),
+        point_mask,
+    )
+    decoded_path = cumulative_xy_loss(
+        decoded[..., :2],
+        target_points[..., :2],
+        point_mask,
+    )
+    decoded_pen = masked_mean(
+        F.binary_cross_entropy_with_logits(
+            decoded[..., 2],
+            target_points[..., 2],
+            pos_weight=decoded.new_tensor(float(decoded_pen_pos_weight)),
+            reduction="none",
+        ),
+        point_mask,
+    )
+    decoded_curvature = curvature_loss(
+        decoded[..., :2],
+        target_points[..., :2],
+        point_mask,
+    )
+    semantic = decoded.new_tensor(0.0)
+    if semantic_weight > 0.0:
+        if recognizer is None:
+            raise ValueError("semantic_weight > 0 requires a recognizer")
+        semantic = semantic_ctc_loss(
+            recognizer,
+            decoded,
+            point_lengths,
+            text,
+            text_lengths,
+            blank_id=blank_id,
+        )
+
+    loss = (
+        velocity
+        + duration_loss_weight * duration
+        + endpoint_latent_weight * endpoint_latent
+        + decoded_xy_weight * decoded_xy
+        + decoded_path_weight * decoded_path
+        + decoded_pen_weight * decoded_pen
+        + decoded_curvature_weight * decoded_curvature
+        + semantic_weight * semantic
+    )
+    return loss, {
+        "loss": float(loss.detach().cpu()),
+        "velocity": float(velocity.detach().cpu()),
+        "duration": float(duration.detach().cpu()),
+        "endpoint_latent": float(endpoint_latent.detach().cpu()),
+        "decoded_xy": float(decoded_xy.detach().cpu()),
+        "decoded_path": float(decoded_path.detach().cpu()),
+        "decoded_pen": float(decoded_pen.detach().cpu()),
+        "decoded_curvature": float(decoded_curvature.detach().cpu()),
+        "semantic": float(semantic.detach().cpu()),
+        "frames_per_token": float(
+            (
+                latent_lengths.float()
+                / (durations > 0).sum(dim=1).float().clamp(min=1.0)
+            ).mean().detach().cpu()
         ),
     }
 
@@ -472,4 +632,4 @@ def recognizer_ctc_loss(
     for row in range(text.shape[0]):
         targets.append(text[row, : text_lengths[row]].to(torch.long))
     flat_targets = torch.cat(targets, dim=0)
-    return criterion(log_probs, flat_targets, output_lengths, text_lengths)
+    return criterion(log_probs.float(), flat_targets, output_lengths, text_lengths)

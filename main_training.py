@@ -39,6 +39,10 @@ def default_autoencoder_checkpoint(config: ExperimentConfig) -> Path:
     return config.run.out_dir / "autoencoder" / "best.pt"
 
 
+def default_recognizer_checkpoint(config: ExperimentConfig) -> Path:
+    return config.run.out_dir / "recognizer" / "best.pt"
+
+
 def print_dataset_summary(config: ExperimentConfig) -> None:
     summary = dataset_summary(config.data)
     print("Dataset after preprocessing:")
@@ -76,6 +80,19 @@ def is_current_generator_checkpoint(path: Path) -> bool:
     return is_current_generator_payload(payload)
 
 
+def is_current_autoencoder_checkpoint(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        payload = load_checkpoint(path, map_location="cpu")
+    except Exception:
+        return False
+    return (
+        payload.get("model_type") == "local_content_autoencoder"
+        and int(payload.get("autoencoder_training_version", 0)) >= 2
+    )
+
+
 def run_training(args: argparse.Namespace) -> None:
     config_path = resolve_config_path(args.profile, args.config)
     config = load_config(config_path)
@@ -92,39 +109,65 @@ def run_training(args: argparse.Namespace) -> None:
     autoencoder_checkpoint: Path | None = (
         Path(args.autoencoder_checkpoint).expanduser() if args.autoencoder_checkpoint else None
     )
+    recognizer_checkpoint: Path | None = (
+        Path(args.recognizer_checkpoint).expanduser() if args.recognizer_checkpoint else None
+    )
+
+    if args.stage in {"recognizer", "all"}:
+        recognizer_path = default_recognizer_checkpoint(config)
+        if recognizer_checkpoint is not None and args.stage == "recognizer":
+            raise ValueError(
+                "--recognizer-checkpoint selects a dependency checkpoint and "
+                "cannot be used as the output of recognizer training"
+            )
+        if args.skip_existing and recognizer_path.exists():
+            recognizer_checkpoint = recognizer_path
+            print(f"Recognizer already exists, skipping: {recognizer_checkpoint}")
+        else:
+            recognizer_checkpoint = train_recognizer(config)
 
     if args.stage in {"autoencoder", "all"}:
-        if args.skip_existing and default_autoencoder_checkpoint(config).exists():
-            autoencoder_checkpoint = default_autoencoder_checkpoint(config)
+        if recognizer_checkpoint is None:
+            recognizer_checkpoint = default_recognizer_checkpoint(config)
+        require_checkpoint(recognizer_checkpoint, purpose="Recognizer")
+        default_ae = default_autoencoder_checkpoint(config)
+        if args.skip_existing and is_current_autoencoder_checkpoint(default_ae):
+            autoencoder_checkpoint = default_ae
             print(f"Autoencoder already exists, skipping: {autoencoder_checkpoint}")
         else:
-            autoencoder_checkpoint = train_autoencoder(config)
+            if args.skip_existing and default_ae.exists():
+                print(f"Autoencoder checkpoint is legacy, retraining: {default_ae}")
+            autoencoder_checkpoint = train_autoencoder(
+                config,
+                recognizer_checkpoint,
+            )
 
     if args.stage in {"generator", "all"}:
         if autoencoder_checkpoint is None:
             autoencoder_checkpoint = default_autoencoder_checkpoint(config)
         require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
+        if recognizer_checkpoint is None:
+            recognizer_checkpoint = default_recognizer_checkpoint(config)
+        require_checkpoint(recognizer_checkpoint, purpose="Recognizer")
         generator_path = config.run.out_dir / "generator" / "best.pt"
         if args.skip_existing and is_current_generator_checkpoint(generator_path):
             print(f"Generator already exists, skipping: {generator_path}")
         else:
             if args.skip_existing and generator_path.exists():
                 print(f"Generator checkpoint is legacy or incomplete, retraining: {generator_path}")
-            train_generator(config, autoencoder_checkpoint)
-
-    if args.stage in {"recognizer", "all"}:
-        recognizer_path = config.run.out_dir / "recognizer" / "best.pt"
-        if args.skip_existing and recognizer_path.exists():
-            print(f"Recognizer already exists, skipping: {recognizer_path}")
-        else:
-            train_recognizer(config)
+            train_generator(
+                config,
+                autoencoder_checkpoint,
+                recognizer_checkpoint,
+            )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Train the handwriting generation pipeline. "
-            "Default stage is autoencoder because it is the first required model."
+            "Default stage is recognizer because it supplies forced alignments "
+            "and semantic losses to the later stages."
         )
     )
     parser.add_argument(
@@ -140,12 +183,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stage",
         choices=["audit", "autoencoder", "generator", "recognizer", "all"],
-        default="autoencoder",
+        default="recognizer",
         help="Training stage to run.",
     )
     parser.add_argument(
         "--autoencoder-checkpoint",
         help="Autoencoder checkpoint for generator training. Defaults to runs/<profile>/autoencoder/best.pt.",
+    )
+    parser.add_argument(
+        "--recognizer-checkpoint",
+        help=(
+            "Recognizer checkpoint for autoencoder/generator training. "
+            "Defaults to runs/<profile>/recognizer/best.pt."
+        ),
     )
     parser.add_argument(
         "--skip-existing",

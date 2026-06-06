@@ -14,16 +14,24 @@ from handwriting_ai.data.transforms import deltas_to_points
 from handwriting_ai.latent_stats import LatentNormalizationStats, denormalize_latents
 from handwriting_ai.models import (
     AlignedLatentFlow,
+    ContentAlignedLatentFlow,
     InkAutoencoder,
     LatentFlowTransformer,
     LatentRegressorTransformer,
+    LocalInkAutoencoder,
     TrajectoryGenerator,
 )
 
 
-def _load_autoencoder(path: str | Path, device: torch.device) -> tuple[InkAutoencoder, NormalizationStats]:
+def _load_autoencoder(
+    path: str | Path,
+    device: torch.device,
+) -> tuple[InkAutoencoder | LocalInkAutoencoder, NormalizationStats]:
     payload = load_checkpoint(path, map_location=device)
-    model = InkAutoencoder(**payload["model_kwargs"]).to(device)
+    if payload.get("model_type") == "local_content_autoencoder":
+        model = LocalInkAutoencoder(**payload["model_kwargs"]).to(device)
+    else:
+        model = InkAutoencoder(**payload["model_kwargs"]).to(device)
     model.load_state_dict(payload["model_state"])
     model.eval()
     return model, NormalizationStats.from_dict(payload["normalization"])
@@ -33,12 +41,18 @@ def _load_generator(
     path: str | Path,
     device: torch.device,
 ) -> tuple[
-    AlignedLatentFlow | LatentFlowTransformer | LatentRegressorTransformer | TrajectoryGenerator,
+    AlignedLatentFlow
+    | ContentAlignedLatentFlow
+    | LatentFlowTransformer
+    | LatentRegressorTransformer
+    | TrajectoryGenerator,
     dict,
 ]:
     payload = load_checkpoint(path, map_location=device)
     model_type = payload.get("model_type", "latent_flow")
-    if model_type == "aligned_latent_flow":
+    if model_type == "content_aligned_latent_flow":
+        model = ContentAlignedLatentFlow(**payload["model_kwargs"]).to(device)
+    elif model_type == "aligned_latent_flow":
         model = AlignedLatentFlow(**payload["model_kwargs"]).to(device)
     elif model_type == "trajectory_generator":
         model = TrajectoryGenerator(**payload["model_kwargs"]).to(device)

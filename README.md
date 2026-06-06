@@ -1,291 +1,326 @@
 # Handwriting AI
 
-Проект генерирует рукописные траектории пера из печатного текста. Цель не в том,
-чтобы получить картинку почерка, а в том, чтобы получить порядок движения пера,
-подъёмы пера и координаты, пригодные для будущего плоттера.
+Проект преобразует печатный текст в траекторию рукописного письма:
+`[x, y, pen_up]`. Результат предназначен не только для рендера, но и для
+будущего перьевого плоттера, поэтому модель предсказывает порядок движения и
+подъёмы пера.
 
-Датасет уже лежит в `dataset/`:
+Одна обученная система воспроизводит один почерк. Переключение стилей и
+многопользовательские embeddings намеренно не добавлены.
 
-- `dataset/jsons/` - исходные траектории `[x, y, pen_up]`;
-- `dataset/texts/` - текстовые расшифровки;
-- `dataset/all_trajectories.npz` - объединённый файл для обучения.
+## Данные
 
-## Архитектура
+В `dataset/` находятся:
 
-Пайплайн состоит из трёх моделей.
+- `jsons/` - исходные траектории `[x, y, pen_up]`;
+- `texts/` - текстовые расшифровки;
+- `all_trajectories.npz` - подготовленный набор для обучения.
 
-1. `InkAutoencoder`
+Перед моделью абсолютные координаты преобразуются в `(dx, dy, pen_up)`,
+сглаживаются и равномерно пересэмплируются внутри каждого штриха.
 
-   Сжимает длинную последовательность `(dx, dy, pen_up)` в короткую latent-
-   последовательность и восстанавливает её обратно. Это главный первый этап:
-   если автоэнкодер плохо восстанавливает реальные строки, генератор тоже не
-   сможет писать хорошо.
-
-2. `AlignedLatentFlow`
-
-   Генерирует latent-последовательность автоэнкодера по тексту. Во время
-   обучения `Monotonic Alignment Search` автоматически определяет, сколько
-   latent-кадров относится к каждому символу. `DurationPredictor` учится
-   воспроизводить эти длительности, а conditional rectified flow с
-   Conformer-блоками генерирует саму последовательность. Это устраняет
-   принудительное равномерное выравнивание символов и усреднение траекторий в
-   прямую линию.
-
-3. `TrajectoryRecognizer`
-
-   CTC-распознаватель траекторий. Он нужен для контроля читаемости, будущего
-   расчёта CER и rerank нескольких сгенерированных вариантов.
-
-## Основные файлы
-
-- `main_training.py` - удобный запуск обучения.
-- `main_generate.py` - удобная генерация тестовых примеров.
-- `main_evaluate.py` - визуальные проверки между этапами обучения.
-- `configs/gtx1660.toml` - основной профиль под Ryzen 5 2600, GTX 1660 и 16 GB RAM.
-- `configs/cpu_smoke.toml` - очень маленький профиль для быстрой проверки кода.
-- `src/handwriting_ai/` - основной пакет.
-- `tests/` - тесты на preprocessing, модели и inference.
-
-## Быстрая проверка
-
-Перед долгим обучением стоит проверить, что код и датасет читаются:
+Проверка датасета:
 
 ```bash
-.venv/bin/python main_training.py --profile cpu_smoke --stage audit
-.venv/bin/python -m unittest discover -s tests
+.venv/bin/python main_training.py --stage audit
 ```
 
-Можно прогнать весь мини-пайплайн на CPU:
+## Архитектура v7
+
+Пайплайн обучается в следующем порядке:
+
+```text
+TrajectoryRecognizer
+        |
+        +--> CTC forced alignments
+        |
+LocalInkAutoencoder
+        |
+        +--> локальные ink-латенты
+        |
+ContentAlignedLatentFlow
+        |
+        +--> (dx, dy, pen_up)
+```
+
+### 1. TrajectoryRecognizer
+
+CTC-распознаватель читает текст по реальной траектории. Он выполняет сразу
+три задачи:
+
+- измеряет CER;
+- строит принудительное выравнивание символов и кадров;
+- дает differentiable semantic loss для autoencoder и generator.
+
+Recognizer всегда обучается первым.
+
+### 2. LocalInkAutoencoder
+
+Детерминированный autoencoder сжимает четыре точки в один latent-кадр.
+Глобального Transformer-bottleneck больше нет: используются локальные
+свертки с ограниченным receptive field. Поэтому latent около буквы описывает
+локальный фрагмент пера, а не смешивает всю строку.
+
+Помимо геометрических losses, реконструкция проходит через замороженный
+recognizer. CTC loss заставляет autoencoder сохранять читаемый текст.
+
+### 3. CTC forced alignment
+
+Перед обучением generator recognizer строит Viterbi-выравнивание известной
+расшифровки и реальной траектории. Результат кешируется в:
+
+```text
+runs/gtx1660/generator/forced_alignments.pt
+```
+
+Кеш содержит длительность каждого символа. При изменении датасета,
+preprocessing или checkpoint-а recognizer он перестраивается автоматически.
+
+Это фиксированная внешняя разметка. Generator больше не использует MAS и не
+может получать награду за собственное ошибочное выравнивание.
+
+### 4. ContentAlignedLatentFlow
+
+Text encoder и `DurationPredictor` разворачивают символы в latent-кадры.
+Каждый кадр получает:
+
+- embedding соответствующего символа;
+- относительную позицию внутри символа;
+- длительность символа;
+- время rectified flow.
+
+Flow-блоки локальные и имеют линейную сложность по длине, что важно для
+GTX 1660 после уменьшения `downsample_factor` с 8 до 4.
+
+Generator оптимизируется по:
+
+- velocity flow matching;
+- ошибке длительностей из CTC-разметки;
+- latent endpoint loss;
+- `xy`, cumulative path, `pen_up` и curvature после декодирования;
+- CTC semantic loss по предсказанной конечной траектории.
+
+`best.pt` выбирается прежде всего по CER реально сгенерированных validation-
+примеров, а не только по внутреннему flow loss.
+
+## Установка и тесты
+
+Проект рассчитан на Python 3.11+ и PyTorch.
+
+```bash
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python main_training.py --profile cpu_smoke --stage audit
+```
+
+Полный однопроходный smoke-тест:
 
 ```bash
 .venv/bin/python main_training.py --profile cpu_smoke --stage all
-.venv/bin/python main_generate.py --profile cpu_smoke "Тест." --latent-length 24 --steps 2 --temperature 0
 .venv/bin/python main_evaluate.py --profile cpu_smoke --stage all --count 2
 ```
 
-После этого в `outputs/generated/` появятся `.json` и `.png`.
+`cpu_smoke` проверяет работоспособность кода, но не качество почерка.
 
 ## Обучение
 
-Первым всегда обучается автоэнкодер:
+### Шаг 1. Recognizer
+
+Обычный запуск `main_training.py` теперь обучает именно recognizer:
+
+```bash
+.venv/bin/python main_training.py
+```
+
+То же самое явно:
+
+```bash
+.venv/bin/python main_training.py --stage recognizer
+.venv/bin/python main_evaluate.py --stage recognizer
+```
+
+Главная метрика - `val_cer`. На текущем наборе хороший ориентир:
+
+- `< 0.10` - можно переходить дальше;
+- `0.10-0.20` - forced alignment возможен, но стоит проверить ошибки;
+- `> 0.20` - сначала улучшить recognizer.
+
+### Шаг 2. Local autoencoder
 
 ```bash
 .venv/bin/python main_training.py --stage autoencoder
-```
-
-После этого обязательно проверить реконструкции:
-
-```bash
+.venv/bin/python main_evaluate.py --stage autoencoder --split train --count 8
 .venv/bin/python main_evaluate.py --stage autoencoder --split val --count 8
 ```
 
-Открой картинки в `outputs/eval/val/autoencoder/`. Реконструкция должна быть
-похожа на оригинал почти до уровня отдельных букв. Если она превращает буквы в
-палочки или ломает соединения, генератор дальше не спасёт ситуацию.
+Реконструкции должны сохранять буквы, соединения и подъемы пера. Проверять
+только низкий `xy_loss` недостаточно: важны визуальная читаемость и
+`val_cer`.
 
-Когда появится `runs/gtx1660/autoencoder/best.pt`, можно обучать генератор:
+### Шаг 3. Generator
 
 ```bash
 .venv/bin/python main_training.py --stage generator
 ```
 
-После генератора проверить хотя бы train и val:
+В начале запуска будут рассчитаны latent statistics и CTC forced alignments.
+Повторный запуск использует кеш, если его входные данные не изменились.
+
+Проверка:
 
 ```bash
 .venv/bin/python main_evaluate.py --stage generator --split train --count 8 --generator-selection train_best
 .venv/bin/python main_evaluate.py --stage generator --split val --count 8
-```
-
-Рендеры будут разнесены по папкам `outputs/eval/train/generator/` и
-`outputs/eval/val/generator/`, чтобы train и val не смешивались.
-`train_best.pt` нужен для диагностики: если он не пишет train-примеры, то
-генератор ещё не научился запоминать даже обучающую выборку. Обычный `best.pt`
-по-прежнему выбирается по validation loss.
-
-По умолчанию `main_evaluate.py` для генератора берёт latent-длину из реального
-примера. Это упрощает диагностику: если даже при правильной длине строка
-нечитаемая, значит проблема находится в alignment или flow, а не в
-`DurationPredictor`.
-Позже можно проверить предсказание длины отдельно:
-
-```bash
 .venv/bin/python main_evaluate.py --stage generator --split val --count 8 --use-predicted-length
 ```
 
-Распознаватель обучается отдельно:
+Сначала generator должен писать train-примеры, затем validation. Основная
+метрика в логе - `val_cer`. Дополнительно контролируются:
 
-```bash
-.venv/bin/python main_training.py --stage recognizer
-```
+- `velocity`;
+- `duration`;
+- `endpoint_latent`;
+- `decoded_xy`, `decoded_path`, `decoded_pen`;
+- `semantic`.
 
-Проверить его метрики:
+Падение внутренних losses без улучшения `val_cer` больше не считается
+успешным обучением.
 
-```bash
-.venv/bin/python main_evaluate.py --stage recognizer
-```
-
-Если нужно запустить всё подряд:
+### Все этапы
 
 ```bash
 .venv/bin/python main_training.py --stage all
 ```
 
-Если обучение уже частично было пройдено и нужно не трогать готовые
-чекпойнты:
+Порядок будет выбран автоматически:
+
+```text
+recognizer -> autoencoder -> forced alignments -> generator
+```
+
+Чтобы пропустить уже готовые checkpoint-ы текущей версии:
 
 ```bash
 .venv/bin/python main_training.py --stage all --skip-existing
 ```
 
-## Генерация
+## Несовместимость старых checkpoint-ов
 
-После обучения автоэнкодера и генератора:
+Архитектура v7 требует переобучить autoencoder и generator:
+
+```bash
+.venv/bin/python main_training.py --stage autoencoder
+.venv/bin/python main_training.py --stage generator
+```
+
+Старый recognizer можно использовать, если он хорошо распознает validation-
+набор. Старые `InkAutoencoder` и `AlignedLatentFlow v6` несовместимы с новым
+обучением.
+
+Новые типы checkpoint-ов:
+
+```text
+model_type = local_content_autoencoder
+model_type = content_aligned_latent_flow
+generator_training_version = 7
+```
+
+Скрипт генерации не будет молча загружать старый generator.
+
+## Генерация
 
 ```bash
 .venv/bin/python main_generate.py "Привет, это рукописная строка."
 ```
 
-По умолчанию скрипт берёт:
+Результаты сохраняются в `outputs/generated/`:
 
-- `runs/gtx1660/autoencoder/best.pt`;
-- `runs/gtx1660/generator/best.pt`;
-- настройки из `configs/gtx1660.toml`;
-- сохраняет результат в `outputs/generated/`.
+- `.json` - траектория для плоттера;
+- `.png` - визуальная проверка.
 
-Полезные параметры:
+Примеры параметров:
 
 ```bash
-.venv/bin/python main_generate.py "Проверка температуры." --temperature 0.7
-.venv/bin/python main_generate.py "Более смелый вариант." --temperature 1.1
-.venv/bin/python main_generate.py "Фиксированная длина." --latent-length 320
-.venv/bin/python main_generate.py "Train-best диагностика." --generator-selection train_best
-.venv/bin/python main_generate.py "Именованный файл." --name my_sample
+.venv/bin/python main_generate.py "Проверка." --temperature 0.8
+.venv/bin/python main_generate.py "Другой вариант." --temperature 1.1
+.venv/bin/python main_generate.py "Диагностика длины." --latent-length 320
+.venv/bin/python main_generate.py "Train checkpoint." --generator-selection train_best
+.venv/bin/python main_generate.py "Именованный файл." --name sample
 ```
 
-Файл `.json` содержит траекторию для плоттера, `.png` нужен только для
-быстрого визуального контроля.
+Flow обучается от Gaussian noise, поэтому нормальный диапазон температуры -
+примерно `0.7-1.1`. `temperature=0` полезен только как диагностическая
+условная средняя и может давать неестественный результат.
 
-`--steps` задаёт число шагов интегрирования rectified flow. Для обычной
-генерации используется значение из конфига, а для быстрой проверки можно
-поставить `--steps 4`. `--latent-length` вручную задаёт длину сжатой
-последовательности; без него длина строится из предсказанных посимвольных
-длительностей. `--temperature 0` даёт детерминированную диагностику,
-`0.7-1.1` добавляет вариативность почерка.
+`--steps` задает число шагов интегрирования. Для быстрой проверки можно
+использовать 4-8, для итоговой генерации профиль GTX 1660 использует 32.
 
-## Настройки под GTX 1660
+## Настройки GTX 1660
 
-В `configs/gtx1660.toml` уже стоят осторожные параметры:
+Основной профиль: `configs/gtx1660.toml`.
 
-- маленький `batch_size = 2`;
-- gradient accumulation;
+В нем уже включены:
+
+- `batch_size = 2`;
 - AMP;
-- `persistent_workers = true`, чтобы DataLoader workers не пересоздавались
-  между эпохами;
-- `eval_every = 5`, чтобы validation и запись чекпойнтов шли раз в 5 эпох, а
-  не после каждой эпохи;
-- ограничение очень длинных примеров через `data.max_points`;
-- небольшой text encoder и Conformer flow в latent-пространстве.
+- gradient accumulation;
+- `persistent_workers`;
+- validation раз в пять эпох;
+- локальный flow без квадратичного attention по всей траектории;
+- semantic CTC loss раз в четыре шага;
+- CER-оценка на ограниченном числе validation-примеров.
 
 Если не хватает VRAM:
 
 1. поставить `data.batch_size = 1`;
-2. увеличить `grad_accum_steps`;
+2. увеличить `generator.grad_accum_steps`;
 3. уменьшить `data.max_points`;
-4. уменьшить `generator.hidden_dim` и `generator.layers`.
+4. уменьшить `generator.hidden_dim`;
+5. уменьшить `generator.layers`.
 
-Если обучение идёт стабильно и памяти хватает, можно постепенно увеличивать
-`data.max_points`, чтобы вернуть самые длинные строки.
+Если пауза между эпохами слишком длинная:
 
-Если между эпохами всё ещё есть длинная пауза:
+1. увеличить `eval_every`;
+2. уменьшить `generator.eval_samples`;
+3. уменьшить `generator.eval_flow_steps`;
+4. увеличить `semantic_every`;
+5. реже сохранять `epoch_*.pt` через `checkpoint_every`.
 
-1. увеличить `eval_every`, например до `10`;
-2. убедиться, что `persistent_workers = true` при `num_workers > 0`;
-3. уменьшить частоту `checkpoint_every`;
-4. уменьшить `num_workers`, если CPU перегружен, или увеличить до `4`, если
-   подготовка батчей не успевает за GPU.
+Эти параметры влияют на скорость контроля, но не отключают основные
+геометрические losses.
 
-## Как понять, что всё работает
+## Диагностика
 
-Порядок диагностики такой:
-
-1. `autoencoder` должен хорошо восстанавливать реальные строки.
-2. `generator` должен сначала научиться уверенно переобучаться на train.
-3. `recognizer` должен снижать CTC loss и позже использоваться для CER/rerank.
-4. Сгенерированный `.json` должен рендериться без резких скачков и странных
-   подъёмов пера.
-
-Минимальный чек-лист между этапами:
+Минимальный порядок:
 
 ```bash
-# 1. Датасет и preprocessing
 .venv/bin/python main_training.py --stage audit
-
-# 2. После autoencoder
+.venv/bin/python main_evaluate.py --stage recognizer
 .venv/bin/python main_evaluate.py --stage autoencoder --split val --count 8
-
-# 3. После generator: сначала train, потом val
 .venv/bin/python main_evaluate.py --stage generator --split train --count 8 --generator-selection train_best
 .venv/bin/python main_evaluate.py --stage generator --split val --count 8
-
-# 4. После recognizer
-.venv/bin/python main_evaluate.py --stage recognizer
 ```
 
-## Если генерация нечитаемая
+Интерпретация:
 
-Сначала определить, где именно проблема.
+1. Плохой CER recognizer означает ненадежные границы символов.
+2. Хороший recognizer, но нечитаемый autoencoder означает потерю информации
+   в latent-пространстве.
+3. Хороший autoencoder, но плохой train generator означает проблему flow,
+   длительностей или весов semantic/geometric losses.
+4. Хороший train и плохой val означают недостаток покрытия датасета.
 
-1. Если `autoencoder` плохо восстанавливает реальные строки, нужно улучшать
-   автоэнкодер: больше latent-размер, меньше downsample, дольше обучение или
-   меньше `kl_weight`.
+## Основные файлы
 
-2. Если `autoencoder` хороший, но `generator` плохо пишет даже `--split train`
-   с реальной latent-длиной, нужно смотреть метрики `alignment`, `duration` и
-   `velocity`: сначала должен стабилизироваться MAS, затем flow.
-
-3. Если `generator` пишет train, но плохо пишет val, проблема уже в
-   обобщении: нужно больше данных, лучше покрытие буквосочетаний и аккуратнее
-   регуляризация.
-
-В текущей версии генератор обучается как `AlignedLatentFlow`: MAS +
-посимвольные длительности + rectified flow в latent-пространстве. Если
-генератор был обучен предыдущей архитектурой или версией до
-`generator_training_version = 6`, его нужно переобучить:
-
-```bash
-.venv/bin/python main_training.py --stage generator
-```
-
-Автоэнкодер при этом можно не переобучать, если его реконструкции выглядят
-достаточно хорошо.
-
-`main_generate.py` специально не будет молча использовать старый чекпойнт:
-если увидишь сообщение `Generator checkpoint is outdated or unsupported`,
-просто переобучи generator командой выше. Старый flow-чекпойнт можно открыть
-только явно:
-
-```bash
-.venv/bin/python main_generate.py "Текст" --allow-legacy-flow
-```
-
-Это нужно только для сравнения/отладки, не для нормальной генерации.
-
-Для проверки датасета:
-
-```bash
-.venv/bin/python main_training.py --stage audit
-```
-
-Для тестов:
-
-```bash
-.venv/bin/python -m unittest discover -s tests
-```
+- `main_training.py` - обучение этапов;
+- `main_generate.py` - генерация JSON и PNG;
+- `main_evaluate.py` - визуальная диагностика;
+- `src/handwriting_ai/alignment.py` - CTC forced alignment и кеш;
+- `src/handwriting_ai/metrics.py` - CER и CTC decode;
+- `src/handwriting_ai/models/local_autoencoder.py` - локальный autoencoder;
+- `src/handwriting_ai/models/content_flow.py` - generator v7;
+- `tests/` - unit и integration-тесты.
 
 ## Низкоуровневый CLI
-
-Корневые скрипты используют пакетный CLI внутри `src/handwriting_ai/`. Если
-понадобится точечный запуск, команды всё ещё доступны:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m handwriting_ai audit-data --config configs/gtx1660.toml
@@ -294,86 +329,48 @@ PYTHONPATH=src .venv/bin/python -m handwriting_ai render --json-path outputs/gen
 
 ## Передача эпох по локальной сети
 
-`main_sync.py` - отдельная утилита только для передачи файлов эпох/чекпойнтов.
-Она не синхронизирует весь проект, датасет или исходный код. По умолчанию она
-работает только с папкой `runs/`, которая лежит рядом с `main_sync.py`.
+`main_sync.py` передает только checkpoint-ы из проектной папки `runs/`.
+Датасет и исходный код он не синхронизирует.
 
-На ПК-приёмнике, куда нужно складывать эпохи:
+На принимающем компьютере:
 
 ```bash
 python main_sync.py serve --token my_secret
 ```
 
-Сервер примет файлы в папку:
-
-```text
-runs/
-```
-
-На ПК с видеокартой, где идёт обучение:
+На компьютере с видеокартой:
 
 ```bash
 python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret
 ```
 
-Замени `192.168.1.20` на IP ПК-приёмника. Скрипт будет раз в минуту смотреть
-в локальную папку `runs/` и отправлять новые или изменённые файлы:
-
-- `best.pt`;
-- `train_best.pt`;
-- `last.pt`;
-- `epoch_*.pt`;
-- `config.json`.
-
-Если нужны только `best.pt`, `train_best.pt`, `last.pt` и `config.json`, без промежуточных эпох:
-
-```bash
-python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --best-last-only
-```
-
-Разовая отправка вместо постоянного наблюдения:
+Разовая отправка:
 
 ```bash
 python main_sync.py push --remote http://192.168.1.20:8765 --token my_secret
 ```
 
-Если по какой-то причине конфиги передавать не нужно:
+Только `best.pt`, `train_best.pt`, `last.pt` и `config.json`:
 
 ```bash
-python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --no-configs
+python main_sync.py watch --remote http://192.168.1.20:8765 --token my_secret --best-last-only
 ```
 
-Если папка эпох нестандартная, можно явно указать её на обоих ПК:
+Явная папка эпох:
 
 ```bash
 python main_sync.py serve --epochs-dir /Users/frimo/Documents/PycharmProjects/Handwriting/runs --token my_secret
 python main_sync.py watch --epochs-dir /Users/frimo/Documents/PycharmProjects/Handwriting/runs --remote http://192.168.1.20:8765 --token my_secret
 ```
 
-Файлы, которые изменялись меньше `--min-age` секунд назад, не отправляются,
-чтобы не копировать недописанный чекпойнт. По умолчанию `--min-age 5`.
+В логе:
 
-В логе передачи видно, что именно произошло:
+- `UP` - файл передан;
+- `SKIP` - такой же файл уже есть;
+- `RECV` - файл принят сервером.
 
-```text
-Scan 14:25:03: /.../runs | files=4 | mode=best/last only | configs=yes
-FILE gtx1660/generator/config.json | 1.8 KB
-UP   gtx1660/generator/config.json | 1.8 KB | 0.01s | 0.17 MB/s
-FILE gtx1660/generator/best.pt | 63.0 MB
-UP   gtx1660/generator/best.pt | 63.0 MB | 4.21s | 14.96 MB/s
-FILE gtx1660/generator/train_best.pt | 63.0 MB
-UP   gtx1660/generator/train_best.pt | 63.0 MB | 4.18s | 15.07 MB/s
-FILE gtx1660/generator/last.pt | 63.0 MB
-SKIP gtx1660/generator/last.pt | 63.0 MB | already on receiver
-Done. uploaded=3, skipped=1, found=4, sent=126.0 MB, elapsed=8.45s, avg=14.91 MB/s
-```
+Для каждого файла и полного прохода выводятся размер, время и скорость.
 
-`UP` означает, что файл передан. `SKIP` означает, что такой же файл уже есть
-на принимающем ПК. Скорость считается по каждому переданному файлу и по всему
-проходу.
-
-На принимающем ПК во время загрузки будет строка вида:
-
-```text
-RECV gtx1660/generator/best.pt | 63.0 MB | 4.18s | 15.07 MB/s
-```
+Оба компьютера обычно могут работать через локальный IP одного роутера даже
+при включенном VPN. Если соединения нет, нужно разрешить local network/LAN в
+настройках VPN и проверить firewall.

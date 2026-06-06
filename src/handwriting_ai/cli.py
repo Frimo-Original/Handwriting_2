@@ -31,13 +31,17 @@ def cmd_audit_data(args: argparse.Namespace) -> None:
 
 def cmd_train_autoencoder(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    path = train_autoencoder(config)
+    path = train_autoencoder(config, args.recognizer_checkpoint)
     print(f"Best autoencoder checkpoint: {path}")
 
 
 def cmd_train_generator(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    path = train_generator(config, args.autoencoder_checkpoint)
+    path = train_generator(
+        config,
+        args.autoencoder_checkpoint,
+        args.recognizer_checkpoint,
+    )
     print(f"Best generator checkpoint: {path}")
 
 
@@ -93,13 +97,21 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config(audit)
     audit.set_defaults(func=cmd_audit_data)
 
-    ae = sub.add_parser("train-autoencoder", help="Train InkVAE autoencoder.")
+    ae = sub.add_parser(
+        "train-autoencoder",
+        help="Train the local content-preserving autoencoder.",
+    )
     _add_config(ae)
+    ae.add_argument("--recognizer-checkpoint", required=True)
     ae.set_defaults(func=cmd_train_autoencoder)
 
-    gen = sub.add_parser("train-generator", help="Train monotonic duration-conditioned latent flow.")
+    gen = sub.add_parser(
+        "train-generator",
+        help="Train CTC-aligned duration-conditioned latent flow.",
+    )
     _add_config(gen)
     gen.add_argument("--autoencoder-checkpoint", required=True)
+    gen.add_argument("--recognizer-checkpoint", required=True)
     gen.set_defaults(func=cmd_train_generator)
 
     rec = sub.add_parser("train-recognizer", help="Train CTC trajectory recognizer.")
@@ -109,7 +121,10 @@ def build_parser() -> argparse.ArgumentParser:
     generate = sub.add_parser("generate", help="Generate a plotter-ready trajectory from text.")
     _add_config(generate)
     generate.add_argument("--text", required=True)
-    generate.add_argument("--autoencoder-checkpoint", help="Required for aligned_latent_flow generation.")
+    generate.add_argument(
+        "--autoencoder-checkpoint",
+        help="Required for content_aligned_latent_flow generation.",
+    )
     generate.add_argument("--generator-checkpoint", required=True)
     generate.add_argument("--out-json", required=True)
     generate.add_argument("--out-png")
@@ -128,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-point-length",
         dest="max_latent_length",
         type=int,
-        default=768,
+        default=1024,
     )
     generate.add_argument("--pen-threshold", type=float, default=0.5)
     generate.set_defaults(func=cmd_generate)

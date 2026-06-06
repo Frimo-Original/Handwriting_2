@@ -9,6 +9,7 @@ from handwriting_ai.checkpoint import save_checkpoint
 from handwriting_ai.config import ExperimentConfig
 from handwriting_ai.data import build_dataloaders
 from handwriting_ai.data.codec import CTC_BLANK_ID, VOCAB_TOKENS
+from handwriting_ai.metrics import ctc_character_error_rate
 from handwriting_ai.models import TrajectoryRecognizer
 from handwriting_ai.seed import resolve_device, seed_everything
 from handwriting_ai.training.common import (
@@ -89,7 +90,10 @@ def train_recognizer(config: ExperimentConfig) -> Path:
             continue
 
         val_metrics = evaluate_recognizer(model, val_loader, device)
-        print(f"CTC epoch {epoch}: train_loss={train_avg['loss']:.4f} val_loss={val_metrics['loss']:.4f}")
+        print(
+            f"CTC epoch {epoch}: train_loss={train_avg['loss']:.4f} "
+            f"val_loss={val_metrics['loss']:.4f} val_cer={val_metrics['cer']:.4f}"
+        )
 
         payload = {
             "epoch": epoch,
@@ -99,11 +103,13 @@ def train_recognizer(config: ExperimentConfig) -> Path:
             "normalization": stats.to_dict(),
             "vocab_tokens": VOCAB_TOKENS,
             "config": to_plain(config),
+            "train_metrics": train_avg,
             "val_metrics": val_metrics,
         }
         save_checkpoint(last_path, **payload)
-        if val_metrics["loss"] < best_val:
-            best_val = val_metrics["loss"]
+        selection_metric = val_metrics["cer"] + 0.01 * val_metrics["loss"]
+        if selection_metric < best_val:
+            best_val = selection_metric
             save_checkpoint(best_path, **payload)
         if epoch % config.recognizer.checkpoint_every == 0 or epoch == config.recognizer.epochs:
             save_checkpoint(run_dir / f"epoch_{epoch:04d}.pt", **payload)
@@ -124,5 +130,17 @@ def evaluate_recognizer(model: torch.nn.Module, loader, device: torch.device) ->
             batch.text_lengths,
             blank_id=CTC_BLANK_ID,
         )
-        losses.append({"loss": float(loss.detach().cpu())})
+        losses.append(
+            {
+                "loss": float(loss.detach().cpu()),
+                "cer": ctc_character_error_rate(
+                    log_probs,
+                    output_lengths,
+                    batch.text,
+                    batch.text_lengths,
+                    blank_id=CTC_BLANK_ID,
+                    include_eos=False,
+                ),
+            }
+        )
     return average_metric_dicts(losses)

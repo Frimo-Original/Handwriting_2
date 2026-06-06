@@ -5,6 +5,7 @@ CHAR_SET = "\n„“ абвгдеёжзийклмнопрстуфхцчшщъы�
 EOS_TOKEN = "<EOS>"
 VOCAB_TOKENS = list(CHAR_SET) + [EOS_TOKEN]
 VOCAB_SIZE = len(VOCAB_TOKENS)
+EOS_ID = VOCAB_SIZE - 1
 PAD_TOKEN = "<PAD>"
 PAD_ID = VOCAB_SIZE
 CTC_BLANK_ID = VOCAB_SIZE
@@ -37,4 +38,3 @@ def decode_tokens(indices: list[int] | tuple[int, ...], skip_eos: bool = True) -
             continue
         chars.append(token)
     return "".join(chars)
-

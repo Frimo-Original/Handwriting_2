@@ -4,6 +4,7 @@ import argparse
 import re
 import sys
 from datetime import datetime
+import math
 from pathlib import Path
 
 
@@ -101,6 +102,13 @@ def run_generation(args: argparse.Namespace) -> None:
     generator_payload = validate_generator_checkpoint(generator_checkpoint, allow_legacy_flow=args.allow_legacy_flow)
     if generator_payload.get("model_type", "latent_flow") != "trajectory_generator":
         require_checkpoint(autoencoder_checkpoint, purpose="Autoencoder")
+        autoencoder_payload = load_checkpoint(autoencoder_checkpoint, map_location="cpu")
+        downsample_factor = int(autoencoder_payload["model_kwargs"]["downsample_factor"])
+        max_latent_length = args.max_latent_length or math.ceil(
+            (config.data.max_points or 4096) / downsample_factor
+        )
+    else:
+        max_latent_length = args.max_latent_length or config.data.max_points or 4096
 
     out_dir = Path(args.out_dir).expanduser()
     out_json, out_png = resolve_output_paths(out_dir, args.name, text)
@@ -113,7 +121,7 @@ def run_generation(args: argparse.Namespace) -> None:
         steps=args.steps if args.steps is not None else config.generator.flow_steps,
         temperature=args.temperature if args.temperature is not None else config.generator.temperature,
         latent_length=args.latent_length,
-        max_latent_length=args.max_latent_length,
+        max_latent_length=max_latent_length,
         pen_threshold=args.pen_threshold,
     )
     save_points_json(out_json, points)
@@ -146,7 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-legacy-flow",
         action="store_true",
-        help="Allow old LatentFlowTransformer checkpoints. New training uses aligned_latent_flow.",
+        help=(
+            "Allow old LatentFlowTransformer checkpoints. "
+            "New training uses content_aligned_latent_flow."
+        ),
     )
     parser.add_argument("--out-dir", default="outputs/generated", help="Directory for JSON and PNG outputs.")
     parser.add_argument("--name", help="Output filename without extension.")
@@ -165,8 +176,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-point-length",
         dest="max_latent_length",
         type=int,
-        default=768,
-        help="Maximum generated latent length.",
+        default=None,
+        help="Maximum generated latent length. Defaults to the data-profile limit.",
     )
     parser.add_argument("--pen-threshold", type=float, default=0.5)
     return parser

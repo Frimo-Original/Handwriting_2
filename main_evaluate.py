@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -16,14 +17,24 @@ if str(SRC_DIR) not in sys.path:
 
 from handwriting_ai.checkpoint import load_checkpoint
 from handwriting_ai.config import ExperimentConfig, load_config
-from handwriting_ai.data.codec import decode_tokens
-from handwriting_ai.data.dataset import NormalizationStats, build_datasets
+from handwriting_ai.data.codec import CTC_BLANK_ID, decode_tokens
+from handwriting_ai.data.dataset import (
+    NormalizationStats,
+    build_dataloaders,
+    build_datasets,
+)
 from handwriting_ai.data.rendering import render_points_to_image
 from handwriting_ai.data.transforms import deltas_to_points
 from handwriting_ai.generator_checkpoint import generator_checkpoint_problem, is_current_generator_payload
 from handwriting_ai.inference import generate_points
-from handwriting_ai.models import InkAutoencoder
+from handwriting_ai.metrics import ctc_character_error_rate
+from handwriting_ai.models import (
+    InkAutoencoder,
+    LocalInkAutoencoder,
+    TrajectoryRecognizer,
+)
 from handwriting_ai.seed import resolve_device
+from handwriting_ai.training.losses import recognizer_ctc_loss
 
 
 PROFILES = {
@@ -72,9 +83,15 @@ def require_current_generator_checkpoint(path: Path) -> None:
     )
 
 
-def load_autoencoder(path: Path, device: torch.device) -> tuple[InkAutoencoder, NormalizationStats]:
+def load_autoencoder(
+    path: Path,
+    device: torch.device,
+) -> tuple[InkAutoencoder | LocalInkAutoencoder, NormalizationStats]:
     payload = load_checkpoint(path, map_location=device)
-    model = InkAutoencoder(**payload["model_kwargs"]).to(device)
+    if payload.get("model_type") == "local_content_autoencoder":
+        model = LocalInkAutoencoder(**payload["model_kwargs"]).to(device)
+    else:
+        model = InkAutoencoder(**payload["model_kwargs"]).to(device)
     model.load_state_dict(payload["model_state"])
     model.eval()
     return model, NormalizationStats.from_dict(payload["normalization"])
@@ -93,6 +110,9 @@ def evaluate_autoencoder(args: argparse.Namespace, config: ExperimentConfig, dev
     out_dir = Path(args.out_dir) / args.split / "autoencoder"
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Autoencoder checkpoint: {checkpoint}")
+    payload = load_checkpoint(checkpoint, map_location="cpu")
+    if payload.get("val_metrics"):
+        print(f"Validation metrics: {payload['val_metrics']}")
 
     for item in selected_items(config, stats, args.split, args.count):
         points = item["points"].unsqueeze(0).to(device)
@@ -129,6 +149,14 @@ def evaluate_generator(args: argparse.Namespace, config: ExperimentConfig, devic
         _, stats = load_autoencoder(autoencoder_checkpoint, device)
         autoencoder_payload = load_checkpoint(autoencoder_checkpoint, map_location="cpu")
         downsample_factor = int(autoencoder_payload["model_kwargs"]["downsample_factor"])
+    if args.max_latent_length is not None:
+        max_latent_length = args.max_latent_length
+    elif generator_model_type == "trajectory_generator":
+        max_latent_length = config.data.max_points or 4096
+    else:
+        assert downsample_factor is not None
+        max_points = config.data.max_points or 4096
+        max_latent_length = math.ceil(max_points / downsample_factor)
     out_dir = Path(args.out_dir) / args.split / "generator"
     out_dir.mkdir(parents=True, exist_ok=True)
     if generator_model_type == "trajectory_generator":
@@ -136,6 +164,8 @@ def evaluate_generator(args: argparse.Namespace, config: ExperimentConfig, devic
     else:
         print(f"Autoencoder checkpoint: {autoencoder_checkpoint}")
     print(f"Generator checkpoint:   {generator_checkpoint}")
+    if generator_payload.get("val_metrics"):
+        print(f"Validation metrics:     {generator_payload['val_metrics']}")
 
     for item in selected_items(config, stats, args.split, args.count):
         text = decode_tokens(item["text"].numpy().tolist())
@@ -155,7 +185,7 @@ def evaluate_generator(args: argparse.Namespace, config: ExperimentConfig, devic
             steps=args.steps if args.steps is not None else config.generator.flow_steps,
             temperature=args.temperature if args.temperature is not None else config.generator.temperature,
             latent_length=latent_length,
-            max_latent_length=args.max_latent_length,
+            max_latent_length=max_latent_length,
             pen_threshold=args.pen_threshold,
         )
         sample_prefix = f"sample_{int(item['sample_id']):04d}"
@@ -165,13 +195,64 @@ def evaluate_generator(args: argparse.Namespace, config: ExperimentConfig, devic
     print(f"Saved generator renders to {out_dir}")
 
 
-def evaluate_recognizer(args: argparse.Namespace, config: ExperimentConfig) -> None:
+def evaluate_recognizer(
+    args: argparse.Namespace,
+    config: ExperimentConfig,
+    device: torch.device,
+) -> None:
     checkpoint = Path(args.recognizer_checkpoint).expanduser() if args.recognizer_checkpoint else default_recognizer_checkpoint(config)
     require_checkpoint(checkpoint, purpose="Recognizer")
     payload = load_checkpoint(checkpoint, map_location="cpu")
     print(f"Recognizer checkpoint: {checkpoint}")
     print(f"Epoch: {payload.get('epoch')}")
-    print(f"Validation metrics: {payload.get('val_metrics')}")
+    print(f"Saved validation metrics: {payload.get('val_metrics')}")
+
+    model = TrajectoryRecognizer(**payload["model_kwargs"]).to(device)
+    model.load_state_dict(payload["model_state"])
+    model.eval()
+    stats = NormalizationStats.from_dict(payload["normalization"])
+    evaluation_hardware = replace(
+        config.hardware,
+        num_workers=0,
+        pin_memory=False,
+        persistent_workers=False,
+        prefetch_factor=None,
+    )
+    train_loader, val_loader, _ = build_dataloaders(
+        config.data,
+        evaluation_hardware,
+        stats=stats,
+    )
+    loader = train_loader if args.split == "train" else val_loader
+    losses: list[float] = []
+    cers: list[float] = []
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            log_probs, output_lengths = model(batch.points, batch.point_lengths)
+            loss = recognizer_ctc_loss(
+                log_probs,
+                output_lengths,
+                batch.text,
+                batch.text_lengths,
+                blank_id=CTC_BLANK_ID,
+            )
+            losses.append(float(loss.detach().cpu()))
+            cers.append(
+                ctc_character_error_rate(
+                    log_probs,
+                    output_lengths,
+                    batch.text,
+                    batch.text_lengths,
+                    blank_id=CTC_BLANK_ID,
+                    include_eos=False,
+                )
+            )
+    print(
+        f"Current {args.split} metrics: "
+        f"loss={sum(losses) / max(len(losses), 1):.4f} "
+        f"cer={sum(cers) / max(len(cers), 1):.4f}"
+    )
 
 
 def run(args: argparse.Namespace) -> None:
@@ -187,7 +268,7 @@ def run(args: argparse.Namespace) -> None:
     if args.stage in {"generator", "all"}:
         evaluate_generator(args, config, device)
     if args.stage in {"recognizer", "all"}:
-        evaluate_recognizer(args, config)
+        evaluate_recognizer(args, config, device)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -215,8 +296,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-point-length",
         dest="max_latent_length",
         type=int,
-        default=768,
-        help="Maximum generated latent length.",
+        default=None,
+        help="Maximum generated latent length. Defaults to the data-profile limit.",
     )
     parser.add_argument("--pen-threshold", type=float, default=0.5)
     parser.add_argument(

@@ -16,10 +16,10 @@ import main_training
 
 
 class EntrypointTests(unittest.TestCase):
-    def test_training_parser_defaults_to_autoencoder(self) -> None:
+    def test_training_parser_defaults_to_recognizer(self) -> None:
         args = main_training.build_parser().parse_args([])
         self.assertEqual(args.profile, "gtx1660")
-        self.assertEqual(args.stage, "autoencoder")
+        self.assertEqual(args.stage, "recognizer")
 
     def test_generate_output_paths(self) -> None:
         out_json, out_png = main_generate.resolve_output_paths(Path("outputs"), "sample", "тест")
@@ -78,7 +78,7 @@ class EntrypointTests(unittest.TestCase):
             self.assertFalse(main_training.is_current_generator_checkpoint(path))
             save_checkpoint(
                 path,
-                model_type="aligned_latent_flow",
+                model_type="content_aligned_latent_flow",
                 generator_training_version=CURRENT_GENERATOR_TRAINING_VERSION,
             )
             self.assertTrue(main_training.is_current_generator_checkpoint(path))
@@ -114,7 +114,7 @@ class EntrypointTests(unittest.TestCase):
 
             save_checkpoint(
                 path,
-                model_type="aligned_latent_flow",
+                model_type="content_aligned_latent_flow",
                 generator_training_version=CURRENT_GENERATOR_TRAINING_VERSION,
             )
             main_generate.validate_generator_checkpoint(path, allow_legacy_flow=False)

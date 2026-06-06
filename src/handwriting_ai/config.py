@@ -46,7 +46,6 @@ class AutoencoderConfig:
     latent_dim: int
     downsample_factor: int
     bottleneck_layers: int
-    n_heads: int
     dropout: float
     learning_rate: float
     weight_decay: float
@@ -59,6 +58,9 @@ class AutoencoderConfig:
     render_weight: float
     checkpoint_every: int
     eval_every: int = 1
+    local_kernel_size: int = 9
+    content_loss_weight: float = 0.15
+    content_loss_every: int = 2
 
 
 @dataclass(frozen=True)
@@ -73,25 +75,22 @@ class GeneratorConfig:
     epochs: int
     grad_accum_steps: int
     max_grad_norm: float
-    length_loss_weight: float
     checkpoint_every: int
     flow_steps: int
     temperature: float
     eval_every: int = 1
     augment_targets: bool = False
-    alignment_loss_weight: float = 1.0
     duration_loss_weight: float = 0.25
-    alignment_prior_strength: float = 0.5
-    alignment_prior_width: float = 0.35
     decoded_xy_weight: float = 8.0
     decoded_path_weight: float = 1.50
     decoded_pen_weight: float = 0.75
     decoded_pen_pos_weight: float = 8.0
     decoded_curvature_weight: float = 0.10
-    decoded_render_weight: float = 0.0
-    decoded_std_weight: float = 0.0
-    decoded_bbox_weight: float = 0.0
-    decoded_pen_dice_weight: float = 0.0
+    endpoint_latent_weight: float = 0.25
+    semantic_weight: float = 0.05
+    semantic_every: int = 4
+    eval_samples: int = 12
+    eval_flow_steps: int = 16
 
 
 @dataclass(frozen=True)
