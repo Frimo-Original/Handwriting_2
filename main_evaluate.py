@@ -211,12 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--steps", type=int)
     parser.add_argument("--temperature", type=float)
     parser.add_argument(
-        "--max-point-length",
         "--max-latent-length",
+        "--max-point-length",
         dest="max_latent_length",
         type=int,
-        default=4096,
-        help="Maximum generated length; points for trajectory_generator, latents for legacy generators.",
+        default=768,
+        help="Maximum generated latent length.",
     )
     parser.add_argument("--pen-threshold", type=float, default=0.5)
     parser.add_argument(

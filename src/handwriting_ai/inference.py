@@ -12,7 +12,13 @@ from handwriting_ai.data.dataset import NormalizationStats
 from handwriting_ai.data.rendering import render_points_to_image
 from handwriting_ai.data.transforms import deltas_to_points
 from handwriting_ai.latent_stats import LatentNormalizationStats, denormalize_latents
-from handwriting_ai.models import InkAutoencoder, LatentFlowTransformer, LatentRegressorTransformer, TrajectoryGenerator
+from handwriting_ai.models import (
+    AlignedLatentFlow,
+    InkAutoencoder,
+    LatentFlowTransformer,
+    LatentRegressorTransformer,
+    TrajectoryGenerator,
+)
 
 
 def _load_autoencoder(path: str | Path, device: torch.device) -> tuple[InkAutoencoder, NormalizationStats]:
@@ -26,10 +32,15 @@ def _load_autoencoder(path: str | Path, device: torch.device) -> tuple[InkAutoen
 def _load_generator(
     path: str | Path,
     device: torch.device,
-) -> tuple[LatentFlowTransformer | LatentRegressorTransformer | TrajectoryGenerator, dict]:
+) -> tuple[
+    AlignedLatentFlow | LatentFlowTransformer | LatentRegressorTransformer | TrajectoryGenerator,
+    dict,
+]:
     payload = load_checkpoint(path, map_location=device)
     model_type = payload.get("model_type", "latent_flow")
-    if model_type == "trajectory_generator":
+    if model_type == "aligned_latent_flow":
+        model = AlignedLatentFlow(**payload["model_kwargs"]).to(device)
+    elif model_type == "trajectory_generator":
         model = TrajectoryGenerator(**payload["model_kwargs"]).to(device)
     elif model_type == "latent_regressor":
         model = LatentRegressorTransformer(**payload["model_kwargs"]).to(device)

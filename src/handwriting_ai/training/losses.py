@@ -5,6 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from handwriting_ai.latent_stats import LatentNormalizationStats, denormalize_latents
+from handwriting_ai.models.aligned_flow import AlignedLatentFlow
 from handwriting_ai.models.autoencoder import AutoencoderOutput
 from handwriting_ai.models.flow import LatentFlowTransformer
 from handwriting_ai.models.latent_regressor import LatentRegressorTransformer
@@ -229,6 +230,58 @@ def flow_matching_loss(
         "loss": float(loss.detach().cpu()),
         "velocity": float(velocity_loss.detach().cpu()),
         "length": float(length_loss.detach().cpu()),
+    }
+
+
+def aligned_flow_matching_loss(
+    model: AlignedLatentFlow,
+    latents: torch.Tensor,
+    latent_mask: torch.Tensor,
+    latent_lengths: torch.Tensor,
+    text: torch.Tensor,
+    text_mask: torch.Tensor,
+    text_lengths: torch.Tensor,
+    *,
+    alignment_loss_weight: float,
+    duration_loss_weight: float,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    noise = torch.randn_like(latents) * latent_mask.unsqueeze(-1)
+    times = torch.rand(latents.shape[0], device=latents.device)
+    time_view = times.view(-1, 1, 1)
+    noisy = ((1.0 - time_view) * noise + time_view * latents) * latent_mask.unsqueeze(-1)
+    target_velocity = (latents - noise) * latent_mask.unsqueeze(-1)
+    output = model.training_forward(
+        noisy,
+        times,
+        latents,
+        latent_mask,
+        latent_lengths,
+        text,
+        text_mask,
+        text_lengths,
+    )
+    velocity = masked_mean(
+        F.mse_loss(output.velocity, target_velocity, reduction="none"),
+        latent_mask,
+    ) / latents.shape[-1]
+    alignment_log_probs = F.log_softmax(output.alignment_scores, dim=-1)
+    selected_scores = (alignment_log_probs * output.alignment).sum()
+    alignment_frames = output.alignment.sum().clamp(min=1.0)
+    alignment = -selected_scores / alignment_frames
+    duration_target = torch.log1p(output.durations)
+    duration = masked_mean(
+        F.smooth_l1_loss(output.log_durations, duration_target, reduction="none"),
+        text_mask,
+    )
+    loss = velocity + alignment_loss_weight * alignment + duration_loss_weight * duration
+    return loss, {
+        "loss": float(loss.detach().cpu()),
+        "velocity": float(velocity.detach().cpu()),
+        "alignment": float(alignment.detach().cpu()),
+        "duration": float(duration.detach().cpu()),
+        "frames_per_token": float(
+            (latent_lengths.float() / text_lengths.float().clamp(min=1.0)).mean().detach().cpu()
+        ),
     }
 
 

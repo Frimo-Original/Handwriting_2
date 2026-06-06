@@ -75,6 +75,12 @@ class EntrypointTests(unittest.TestCase):
                 model_type="trajectory_generator",
                 generator_training_version=CURRENT_GENERATOR_TRAINING_VERSION,
             )
+            self.assertFalse(main_training.is_current_generator_checkpoint(path))
+            save_checkpoint(
+                path,
+                model_type="aligned_latent_flow",
+                generator_training_version=CURRENT_GENERATOR_TRAINING_VERSION,
+            )
             self.assertTrue(main_training.is_current_generator_checkpoint(path))
 
     def test_generate_rejects_old_latent_regressor_checkpoint(self) -> None:
@@ -101,6 +107,14 @@ class EntrypointTests(unittest.TestCase):
             save_checkpoint(
                 path,
                 model_type="trajectory_generator",
+                generator_training_version=CURRENT_GENERATOR_TRAINING_VERSION,
+            )
+            with self.assertRaisesRegex(ValueError, "outdated"):
+                main_generate.validate_generator_checkpoint(path, allow_legacy_flow=False)
+
+            save_checkpoint(
+                path,
+                model_type="aligned_latent_flow",
                 generator_training_version=CURRENT_GENERATOR_TRAINING_VERSION,
             )
             main_generate.validate_generator_checkpoint(path, allow_legacy_flow=False)

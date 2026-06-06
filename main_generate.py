@@ -146,27 +146,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-legacy-flow",
         action="store_true",
-        help="Allow old LatentFlowTransformer checkpoints. New training uses trajectory_generator.",
+        help="Allow old LatentFlowTransformer checkpoints. New training uses aligned_latent_flow.",
     )
     parser.add_argument("--out-dir", default="outputs/generated", help="Directory for JSON and PNG outputs.")
     parser.add_argument("--name", help="Output filename without extension.")
     parser.add_argument("--device", help="cpu, cuda, cuda:0, or auto. Defaults to config hardware.device.")
-    parser.add_argument("--steps", type=int, help="Flow integration steps for legacy flow checkpoints.")
+    parser.add_argument("--steps", type=int, help="Rectified-flow integration steps.")
     parser.add_argument("--temperature", type=float, help="Sampling temperature. Defaults to config generator.temperature.")
     parser.add_argument(
-        "--point-length",
         "--latent-length",
+        "--point-length",
         dest="latent_length",
         type=int,
-        help="Force generated point count for trajectory_generator; legacy checkpoints treat it as latent length.",
+        help="Force latent sequence length. Intended for diagnostics; normally durations are predicted.",
     )
     parser.add_argument(
-        "--max-point-length",
         "--max-latent-length",
+        "--max-point-length",
         dest="max_latent_length",
         type=int,
-        default=4096,
-        help="Maximum generated length; points for trajectory_generator, latents for legacy generators.",
+        default=768,
+        help="Maximum generated latent length.",
     )
     parser.add_argument("--pen-threshold", type=float, default=0.5)
     return parser

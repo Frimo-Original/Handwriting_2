@@ -15,13 +15,16 @@ from handwriting_ai.data.codec import VOCAB_TOKENS
 from handwriting_ai.latent_stats import LatentNormalizationStats
 from handwriting_ai.inference import generate_points
 from handwriting_ai.models import (
+    AlignedLatentFlow,
     InkAutoencoder,
     LatentFlowTransformer,
     LatentRegressorTransformer,
     TrajectoryGenerator,
     TrajectoryRecognizer,
 )
+from handwriting_ai.models.aligned_flow import maximum_path
 from handwriting_ai.training.losses import (
+    aligned_flow_matching_loss,
     autoencoder_loss,
     flow_matching_loss,
     latent_regression_loss,
@@ -31,6 +34,30 @@ from handwriting_ai.training.losses import (
 
 
 class ModelTests(unittest.TestCase):
+    def test_maximum_path_is_monotonic_and_complete(self) -> None:
+        scores = torch.tensor(
+            [
+                [
+                    [5.0, 0.0, 0.0],
+                    [4.0, 1.0, 0.0],
+                    [0.0, 5.0, 0.0],
+                    [0.0, 4.0, 1.0],
+                    [0.0, 0.0, 5.0],
+                    [0.0, 0.0, 4.0],
+                ]
+            ]
+        )
+        path = maximum_path(
+            scores,
+            latent_lengths=torch.tensor([6]),
+            text_lengths=torch.tensor([3]),
+        )
+        self.assertEqual(path.shape, scores.shape)
+        self.assertTrue(torch.equal(path.sum(dim=2), torch.ones(1, 6)))
+        self.assertTrue(torch.equal(path.sum(dim=1), torch.tensor([[2.0, 2.0, 2.0]])))
+        token_indices = path[0].argmax(dim=1)
+        self.assertTrue(bool(torch.all(token_indices[1:] >= token_indices[:-1])))
+
     def test_autoencoder_shapes_and_backward(self) -> None:
         model = InkAutoencoder(
             hidden_dim=32,
@@ -83,6 +110,45 @@ class ModelTests(unittest.TestCase):
         )
         loss.backward()
         self.assertIn("velocity", metrics)
+
+    def test_aligned_flow_shapes_alignment_and_backward(self) -> None:
+        model = AlignedLatentFlow(
+            latent_dim=8,
+            hidden_dim=32,
+            text_dim=32,
+            layers=2,
+            n_heads=4,
+            dropout=0.0,
+        )
+        latents = torch.randn(2, 12, 8)
+        latent_lengths = torch.tensor([12, 9], dtype=torch.long)
+        latent_mask = torch.arange(12).unsqueeze(0) < latent_lengths.unsqueeze(1)
+        text = torch.tensor([[10, 11, 12, 89], [13, 14, 89, 90]], dtype=torch.long)
+        text_mask = text != 90
+        text_lengths = text_mask.sum(dim=1)
+        loss, metrics = aligned_flow_matching_loss(
+            model,
+            latents,
+            latent_mask,
+            latent_lengths,
+            text,
+            text_mask,
+            text_lengths,
+            alignment_loss_weight=0.25,
+            duration_loss_weight=0.2,
+        )
+        loss.backward()
+        self.assertIn("alignment", metrics)
+        self.assertIn("duration", metrics)
+        sampled, sampled_mask = model.sample(
+            text,
+            text_mask,
+            latent_length=10,
+            steps=2,
+            temperature=0.0,
+        )
+        self.assertEqual(sampled.shape, (2, 10, 8))
+        self.assertEqual(sampled_mask.shape, (2, 10))
 
     def test_latent_regressor_shapes_and_backward(self) -> None:
         model = LatentRegressorTransformer(
@@ -287,6 +353,70 @@ class ModelTests(unittest.TestCase):
                 temperature=0.0,
             )
             self.assertEqual(points.shape, (24, 3))
+            self.assertEqual(int(points[-1, 2]), 1)
+
+    def test_inference_with_aligned_flow_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ae_path = tmp_path / "ae.pt"
+            generator_path = tmp_path / "aligned.pt"
+            ae = InkAutoencoder(
+                hidden_dim=16,
+                latent_dim=8,
+                downsample_factor=4,
+                bottleneck_layers=0,
+                n_heads=1,
+                dropout=0.0,
+            )
+            generator = AlignedLatentFlow(
+                latent_dim=8,
+                hidden_dim=16,
+                text_dim=16,
+                layers=1,
+                n_heads=1,
+                dropout=0.0,
+            )
+            save_checkpoint(
+                ae_path,
+                model_state=ae.state_dict(),
+                model_kwargs={
+                    "input_dim": 3,
+                    "hidden_dim": 16,
+                    "latent_dim": 8,
+                    "downsample_factor": 4,
+                    "bottleneck_layers": 0,
+                    "n_heads": 1,
+                    "dropout": 0.0,
+                },
+                normalization={"mean": [0.0, 0.0], "std": [1.0, 1.0]},
+                vocab_tokens=VOCAB_TOKENS,
+            )
+            save_checkpoint(
+                generator_path,
+                model_type="aligned_latent_flow",
+                model_state=generator.state_dict(),
+                model_kwargs={
+                    "latent_dim": 8,
+                    "hidden_dim": 16,
+                    "text_dim": 16,
+                    "layers": 1,
+                    "n_heads": 1,
+                    "dropout": 0.0,
+                },
+                latent_normalization={"mean": [0.0] * 8, "std": [1.0] * 8},
+                normalization={"mean": [0.0, 0.0], "std": [1.0, 1.0]},
+                vocab_tokens=VOCAB_TOKENS,
+            )
+            points = generate_points(
+                text="тест",
+                autoencoder_checkpoint=ae_path,
+                generator_checkpoint=generator_path,
+                device=torch.device("cpu"),
+                steps=2,
+                latent_length=8,
+                temperature=0.0,
+            )
+            self.assertEqual(points.shape, (32, 3))
             self.assertEqual(int(points[-1, 2]), 1)
 
     def test_inference_with_latent_regressor_checkpoint(self) -> None:

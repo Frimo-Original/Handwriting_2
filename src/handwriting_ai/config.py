@@ -79,6 +79,10 @@ class GeneratorConfig:
     temperature: float
     eval_every: int = 1
     augment_targets: bool = False
+    alignment_loss_weight: float = 1.0
+    duration_loss_weight: float = 0.25
+    alignment_prior_strength: float = 0.5
+    alignment_prior_width: float = 0.35
     decoded_xy_weight: float = 8.0
     decoded_path_weight: float = 1.50
     decoded_pen_weight: float = 0.75
