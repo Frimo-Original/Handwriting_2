@@ -63,7 +63,9 @@ def train_recognizer(config: ExperimentConfig) -> Path:
         for step, batch in enumerate(progress, start=1):
             batch = batch.to(device)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
-                log_probs, output_lengths = model(batch.points, batch.point_lengths)
+                # Recognizer reads (dx, dy, pen_up); the jump channels are
+                # delivered to the autoencoder/generator only.
+                log_probs, output_lengths = model(batch.points[..., :3], batch.point_lengths)
                 loss = recognizer_ctc_loss(
                     log_probs,
                     output_lengths,
@@ -122,7 +124,7 @@ def evaluate_recognizer(model: torch.nn.Module, loader, device: torch.device) ->
     losses: list[dict[str, float]] = []
     for batch in loader:
         batch = batch.to(device)
-        log_probs, output_lengths = model(batch.points, batch.point_lengths)
+        log_probs, output_lengths = model(batch.points[..., :3], batch.point_lengths)
         loss = recognizer_ctc_loss(
             log_probs,
             output_lengths,

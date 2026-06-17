@@ -113,7 +113,13 @@ def generate_points(
     deltas[:, 2] = (1.0 / (1.0 + np.exp(-deltas[:, 2])) > pen_threshold).astype(np.float32)
     if len(deltas):
         deltas[-1, 2] = 1.0
-    return deltas_to_points(deltas, mean=stats.mean, std=stats.std)
+    return deltas_to_points(
+        deltas,
+        within_mean=stats.mean,
+        within_std=stats.std,
+        jump_mean=stats.jump_mean,
+        jump_std=stats.jump_std,
+    )
 
 
 def save_points_json(path: str | Path, points: np.ndarray) -> None:

@@ -66,14 +66,14 @@ class ModelTests(unittest.TestCase):
             local_kernel_size=5,
             dropout=0.0,
         )
-        points = torch.randn(2, 65, 3)
+        points = torch.randn(2, 65, 5)
         points[..., 2] = (points[..., 2] > 0).float()
         lengths = torch.tensor([65, 48], dtype=torch.long)
         mask = torch.arange(65).unsqueeze(0) < lengths.unsqueeze(1)
         output = model(points, lengths)
         self.assertEqual(output.reconstruction.shape, points.shape)
         self.assertEqual(output.latent.shape[1], 17)
-        loss, _ = autoencoder_loss(
+        loss, metrics = autoencoder_loss(
             output,
             points,
             mask,
@@ -83,6 +83,7 @@ class ModelTests(unittest.TestCase):
             render_weight=0.0,
         )
         loss.backward()
+        self.assertIn("jump", metrics)
 
     def test_maximum_path_is_monotonic_and_complete(self) -> None:
         scores = torch.tensor(
@@ -228,7 +229,7 @@ class ModelTests(unittest.TestCase):
         text_mask = text != 90
         text_lengths = text_mask.sum(dim=1)
         durations = torch.tensor([[4, 4, 0, 0], [3, 4, 0, 0]])
-        points = torch.randn(2, 32, 3)
+        points = torch.randn(2, 32, 5)
         points[..., 2] = (points[..., 2] > 0).float()
         point_lengths = latent_lengths * 4
         point_mask = torch.arange(32).unsqueeze(0) < point_lengths.unsqueeze(1)
@@ -566,7 +567,7 @@ class ModelTests(unittest.TestCase):
                 model_type="local_content_autoencoder",
                 model_state=ae.state_dict(),
                 model_kwargs={
-                    "input_dim": 3,
+                    "input_dim": 5,
                     "hidden_dim": 16,
                     "latent_dim": 8,
                     "downsample_factor": 4,
@@ -574,7 +575,12 @@ class ModelTests(unittest.TestCase):
                     "local_kernel_size": 5,
                     "dropout": 0.0,
                 },
-                normalization={"mean": [0.0, 0.0], "std": [1.0, 1.0]},
+                normalization={
+                    "mean": [0.0, 0.0],
+                    "std": [1.0, 1.0],
+                    "jump_mean": [0.0, 0.0],
+                    "jump_std": [1.0, 1.0],
+                },
                 vocab_tokens=VOCAB_TOKENS,
             )
             save_checkpoint(

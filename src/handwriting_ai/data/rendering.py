@@ -44,9 +44,17 @@ def render_deltas_to_image(
     *,
     mean: np.ndarray | None = None,
     std: np.ndarray | None = None,
+    jump_mean: np.ndarray | None = None,
+    jump_std: np.ndarray | None = None,
     size: tuple[int, int] = (960, 360),
 ) -> Image.Image:
-    points = deltas_to_points(deltas, mean=mean, std=std)
+    points = deltas_to_points(
+        deltas,
+        within_mean=mean,
+        within_std=std,
+        jump_mean=jump_mean,
+        jump_std=jump_std,
+    )
     return render_points_to_image(points, size=size)
 
 

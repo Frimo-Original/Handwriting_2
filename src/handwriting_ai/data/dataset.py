@@ -17,16 +17,27 @@ from handwriting_ai.data.transforms import points_to_deltas, resample_strokes, s
 class NormalizationStats:
     mean: np.ndarray
     std: np.ndarray
+    jump_mean: np.ndarray
+    jump_std: np.ndarray
 
     def to_dict(self) -> dict[str, Any]:
-        return {"mean": self.mean.tolist(), "std": self.std.tolist()}
+        return {
+            "mean": self.mean.tolist(),
+            "std": self.std.tolist(),
+            "jump_mean": self.jump_mean.tolist(),
+            "jump_std": self.jump_std.tolist(),
+        }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "NormalizationStats":
-        return cls(
-            mean=np.asarray(payload["mean"], dtype=np.float32),
-            std=np.asarray(payload["std"], dtype=np.float32),
-        )
+        mean = np.asarray(payload["mean"], dtype=np.float32)
+        std = np.asarray(payload["std"], dtype=np.float32)
+        # Older checkpoints predate the (within, jump) split. Fall back to
+        # reusing the within-stroke stats so that they still load, but they
+        # will not match the current data layout and must be retrained.
+        jump_mean = np.asarray(payload.get("jump_mean", mean.tolist()), dtype=np.float32)
+        jump_std = np.asarray(payload.get("jump_std", std.tolist()), dtype=np.float32)
+        return cls(mean=mean, std=std, jump_mean=jump_mean, jump_std=jump_std)
 
 
 @dataclass(frozen=True)
@@ -102,12 +113,26 @@ def preprocess_samples(
 
 
 def compute_normalization_stats(samples: list[ProcessedSample]) -> NormalizationStats:
-    deltas = [points_to_deltas(sample.points)[:, :2] for sample in samples]
-    merged = np.concatenate(deltas, axis=0)
-    mean = merged.mean(axis=0).astype(np.float32)
-    std = merged.std(axis=0).astype(np.float32)
-    std = np.maximum(std, np.asarray([1e-3, 1e-3], dtype=np.float32))
-    return NormalizationStats(mean=mean, std=std)
+    raw_deltas = [points_to_deltas(sample.points) for sample in samples]
+    within = np.concatenate([d[:, 0:2] for d in raw_deltas], axis=0)
+    jumps_all = np.concatenate([d[:, 3:5] for d in raw_deltas], axis=0)
+    # Jump channels are sparse (active only at the first frame of a new stroke).
+    # Keep their mean at zero so non-jump frames stay exactly zero after
+    # normalization, and only learn a scale from the rows that are active.
+    jump_active = np.any(jumps_all != 0.0, axis=1)
+    jumps = jumps_all[jump_active] if jump_active.any() else jumps_all
+    floor = np.asarray([1e-3, 1e-3], dtype=np.float32)
+    mean = within.mean(axis=0).astype(np.float32)
+    std = np.maximum(within.std(axis=0).astype(np.float32), floor)
+    jump_mean = np.zeros(2, dtype=np.float32)
+    if len(jumps):
+        # Root-mean-square: equivalent to std with mean fixed at zero. This
+        # matches how the channel is consumed at inference time.
+        jump_scale = np.sqrt(np.mean(jumps.astype(np.float64) ** 2, axis=0)).astype(np.float32)
+    else:
+        jump_scale = floor
+    jump_std = np.maximum(jump_scale, floor)
+    return NormalizationStats(mean=mean, std=std, jump_mean=jump_mean, jump_std=jump_std)
 
 
 class TrajectoryDataset(Dataset[dict[str, Any]]):
@@ -138,7 +163,13 @@ class TrajectoryDataset(Dataset[dict[str, Any]]):
                 points[:, :2] *= max(scale, 0.5)
             if self.jitter_std > 0.0:
                 points[:, :2] += np.random.normal(0.0, self.jitter_std, size=points[:, :2].shape)
-        deltas = points_to_deltas(points, mean=self.stats.mean, std=self.stats.std)
+        deltas = points_to_deltas(
+            points,
+            within_mean=self.stats.mean,
+            within_std=self.stats.std,
+            jump_mean=self.stats.jump_mean,
+            jump_std=self.stats.jump_std,
+        )
         return {
             "points": torch.from_numpy(deltas.astype(np.float32)),
             "text": torch.from_numpy(sample.text.astype(np.int64)),
@@ -152,8 +183,9 @@ def collate_batch(items: list[dict[str, Any]]) -> Batch:
     max_points = int(point_lengths.max().item())
     max_text = int(text_lengths.max().item())
     batch_size = len(items)
+    channels = int(items[0]["points"].shape[1])
 
-    points = torch.zeros(batch_size, max_points, 3, dtype=torch.float32)
+    points = torch.zeros(batch_size, max_points, channels, dtype=torch.float32)
     point_mask = torch.zeros(batch_size, max_points, dtype=torch.bool)
     text = torch.full((batch_size, max_text), PAD_ID, dtype=torch.long)
     text_mask = torch.zeros(batch_size, max_text, dtype=torch.bool)

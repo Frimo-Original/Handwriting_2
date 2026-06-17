@@ -88,34 +88,84 @@ def resample_strokes(points: np.ndarray, spacing: float | None) -> np.ndarray:
     return np.concatenate(segments, axis=0).astype(np.float32)
 
 
-def points_to_deltas(points: np.ndarray, mean: np.ndarray | None = None, std: np.ndarray | None = None) -> np.ndarray:
+# Channel layout for delta tensors:
+#   0: dx (within-stroke delta, zero at the first frame of a new stroke)
+#   1: dy (within-stroke delta, zero at the first frame of a new stroke)
+#   2: pen_up flag
+#   3: dx_jump (zero except at the first frame of a new stroke)
+#   4: dy_jump (zero except at the first frame of a new stroke)
+DELTA_CHANNELS = 5
+
+
+def points_to_deltas(
+    points: np.ndarray,
+    within_mean: np.ndarray | None = None,
+    within_std: np.ndarray | None = None,
+    jump_mean: np.ndarray | None = None,
+    jump_std: np.ndarray | None = None,
+) -> np.ndarray:
     arr = validate_points(points)
-    deltas = np.zeros_like(arr, dtype=np.float32)
+    deltas = np.zeros((len(arr), DELTA_CHANNELS), dtype=np.float32)
     if len(arr):
-        deltas[1:, :2] = arr[1:, :2] - arr[:-1, :2]
         deltas[:, 2] = arr[:, 2]
-    if mean is not None and std is not None:
-        deltas[:, :2] = (deltas[:, :2] - mean.reshape(1, 2)) / std.reshape(1, 2)
+        if len(arr) > 1:
+            raw = arr[1:, :2] - arr[:-1, :2]
+            prev_pen_up = arr[:-1, 2] > 0.5
+            # Within-stroke deltas go to channels 0/1, jumps go to channels 3/4.
+            # This separates the bimodal distribution (tiny resampled steps vs.
+            # canvas-spanning jumps) so each channel has well-behaved stats.
+            deltas[1:, 0] = np.where(prev_pen_up, 0.0, raw[:, 0])
+            deltas[1:, 1] = np.where(prev_pen_up, 0.0, raw[:, 1])
+            deltas[1:, 3] = np.where(prev_pen_up, raw[:, 0], 0.0)
+            deltas[1:, 4] = np.where(prev_pen_up, raw[:, 1], 0.0)
+    if within_mean is not None and within_std is not None:
+        deltas[:, 0:2] = (deltas[:, 0:2] - within_mean.reshape(1, 2)) / within_std.reshape(1, 2)
+    if jump_mean is not None and jump_std is not None:
+        deltas[:, 3:5] = (deltas[:, 3:5] - jump_mean.reshape(1, 2)) / jump_std.reshape(1, 2)
     return deltas
 
 
-def deltas_to_points(deltas: np.ndarray, mean: np.ndarray | None = None, std: np.ndarray | None = None) -> np.ndarray:
+def deltas_to_points(
+    deltas: np.ndarray,
+    within_mean: np.ndarray | None = None,
+    within_std: np.ndarray | None = None,
+    jump_mean: np.ndarray | None = None,
+    jump_std: np.ndarray | None = None,
+) -> np.ndarray:
     arr = np.asarray(deltas, dtype=np.float32)
     if arr.ndim != 2 or arr.shape[1] < 3:
         raise ValueError(f"Expected deltas shaped as (T, 3+), got {arr.shape}")
-    restored = arr[:, :3].copy()
-    if mean is not None and std is not None:
-        restored[:, :2] = restored[:, :2] * std.reshape(1, 2) + mean.reshape(1, 2)
-    points = np.zeros_like(restored, dtype=np.float32)
-    points[:, :2] = np.cumsum(restored[:, :2], axis=0)
-    points[:, 2] = (restored[:, 2] > 0.5).astype(np.float32)
+    restored = np.zeros((len(arr), DELTA_CHANNELS), dtype=np.float32)
+    restored[:, : arr.shape[1]] = arr[:, : DELTA_CHANNELS]
+    if within_mean is not None and within_std is not None:
+        restored[:, 0:2] = restored[:, 0:2] * within_std.reshape(1, 2) + within_mean.reshape(1, 2)
+    if jump_mean is not None and jump_std is not None and arr.shape[1] >= 5:
+        restored[:, 3:5] = restored[:, 3:5] * jump_std.reshape(1, 2) + jump_mean.reshape(1, 2)
+    pen_up = (restored[:, 2] > 0.5).astype(np.float32)
+    if len(restored) > 1:
+        prev_pen_up = pen_up[:-1] > 0.5
+        # Only the right channel is allowed to advance the pen at each frame.
+        restored[1:, 0] = np.where(prev_pen_up, 0.0, restored[1:, 0])
+        restored[1:, 1] = np.where(prev_pen_up, 0.0, restored[1:, 1])
+        restored[1:, 3] = np.where(prev_pen_up, restored[1:, 3], 0.0)
+        restored[1:, 4] = np.where(prev_pen_up, restored[1:, 4], 0.0)
+    combined_x = restored[:, 0] + restored[:, 3]
+    combined_y = restored[:, 1] + restored[:, 4]
+    points = np.zeros((len(restored), 3), dtype=np.float32)
+    points[:, 0] = np.cumsum(combined_x, axis=0)
+    points[:, 1] = np.cumsum(combined_y, axis=0)
+    points[:, 2] = pen_up
     if len(points):
         points[-1, 2] = 1.0
     return points
 
 
 def deltas_to_absolute_torch(deltas: torch.Tensor) -> torch.Tensor:
-    xy = torch.cumsum(deltas[..., :2], dim=1)
+    if deltas.shape[-1] >= 5:
+        combined = deltas[..., 0:2] + deltas[..., 3:5]
+    else:
+        combined = deltas[..., 0:2]
+    xy = torch.cumsum(combined, dim=1)
     return torch.cat([xy, deltas[..., 2:3]], dim=-1)
 
 

@@ -51,7 +51,7 @@ class LocalInkAutoencoder(nn.Module):
     def __init__(
         self,
         *,
-        input_dim: int = 3,
+        input_dim: int = 5,
         hidden_dim: int = 128,
         latent_dim: int = 64,
         downsample_factor: int = 4,

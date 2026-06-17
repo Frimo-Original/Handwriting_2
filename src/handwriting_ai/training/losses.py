@@ -19,6 +19,20 @@ def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (values * mask).sum() / mask.sum().clamp(min=1)
 
 
+def combined_xy(deltas: torch.Tensor) -> torch.Tensor:
+    """Return the per-frame (dx, dy) advance regardless of channel layout.
+
+    Five-channel tensors carry the within-stroke delta in channels 0/1 and the
+    cross-stroke jump in channels 3/4. They are mutually exclusive per frame,
+    so their sum is the true advance. Three-channel tensors only carry the
+    within-stroke pair.
+    """
+
+    if deltas.shape[-1] >= 5:
+        return deltas[..., 0:2] + deltas[..., 3:5]
+    return deltas[..., 0:2]
+
+
 def masked_std(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     valid = values[mask]
     if valid.shape[0] < 2:
@@ -178,24 +192,46 @@ def autoencoder_loss(
     pen_weight: float,
     curvature_weight: float,
     render_weight: float,
+    jump_weight: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     recon = output.reconstruction
-    xy_loss = masked_mean(F.smooth_l1_loss(recon[..., :2], target[..., :2], reduction="none"), mask)
+    xy_loss = masked_mean(F.smooth_l1_loss(recon[..., 0:2], target[..., 0:2], reduction="none"), mask)
     pen_loss = masked_mean(
         F.binary_cross_entropy_with_logits(recon[..., 2], target[..., 2], reduction="none"),
         mask,
     )
-    curve = curvature_loss(recon[..., :2], target[..., :2], mask)
+    curve = curvature_loss(recon[..., 0:2], target[..., 0:2], mask)
+    jump_loss = recon.new_tensor(0.0)
+    if recon.shape[-1] >= 5 and target.shape[-1] >= 5:
+        jump_loss = masked_mean(
+            F.smooth_l1_loss(recon[..., 3:5], target[..., 3:5], reduction="none"),
+            mask,
+        )
     kl = -0.5 * (1 + output.logvar - output.mu.pow(2) - output.logvar.exp())
     kl = masked_mean(kl, output.latent_mask)
     raster = recon.new_tensor(0.0)
     if render_weight > 0.0:
-        pred_for_render = torch.cat([recon[..., :2], torch.sigmoid(recon[..., 2:3])], dim=-1)
-        raster = render_loss(pred_for_render, target, mask)
-    loss = xy_loss + pen_weight * pen_loss + curvature_weight * curve + kl_weight * kl + render_weight * raster
+        pred_for_render = torch.cat(
+            [combined_xy(recon), torch.sigmoid(recon[..., 2:3])],
+            dim=-1,
+        )
+        target_for_render = torch.cat(
+            [combined_xy(target), target[..., 2:3]],
+            dim=-1,
+        )
+        raster = render_loss(pred_for_render, target_for_render, mask)
+    loss = (
+        xy_loss
+        + jump_weight * jump_loss
+        + pen_weight * pen_loss
+        + curvature_weight * curve
+        + kl_weight * kl
+        + render_weight * raster
+    )
     metrics = {
         "loss": float(loss.detach().cpu()),
         "xy": float(xy_loss.detach().cpu()),
+        "jump": float(jump_loss.detach().cpu()),
         "pen": float(pen_loss.detach().cpu()),
         "curvature": float(curve.detach().cpu()),
         "kl": float(kl.detach().cpu()),
@@ -225,8 +261,11 @@ def semantic_ctc_loss(
 
 
 def trajectory_for_recognizer(points: torch.Tensor) -> torch.Tensor:
+    # Recognizer only consumes the first three channels (dx, dy, pen_up). The
+    # jump channels are kept separate so the recognizer keeps its compact input
+    # distribution.
     return torch.cat(
-        [points[..., :2], torch.sigmoid(points[..., 2:3])],
+        [points[..., 0:2], torch.sigmoid(points[..., 2:3])],
         dim=-1,
     )
 
@@ -338,6 +377,7 @@ def content_aligned_flow_loss(
     decoded_curvature_weight: float,
     semantic_weight: float,
     blank_id: int,
+    decoded_jump_weight: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     noise = torch.randn_like(latents) * latent_mask.unsqueeze(-1)
     times = torch.rand(latents.shape[0], device=latents.device)
@@ -378,15 +418,25 @@ def content_aligned_flow_loss(
     )
     decoded_xy = masked_mean(
         F.smooth_l1_loss(
-            decoded[..., :2],
-            target_points[..., :2],
+            decoded[..., 0:2],
+            target_points[..., 0:2],
             reduction="none",
         ),
         point_mask,
     )
+    decoded_jump = decoded.new_tensor(0.0)
+    if decoded.shape[-1] >= 5 and target_points.shape[-1] >= 5:
+        decoded_jump = masked_mean(
+            F.smooth_l1_loss(
+                decoded[..., 3:5],
+                target_points[..., 3:5],
+                reduction="none",
+            ),
+            point_mask,
+        )
     decoded_path = cumulative_xy_loss(
-        decoded[..., :2],
-        target_points[..., :2],
+        combined_xy(decoded),
+        combined_xy(target_points),
         point_mask,
     )
     decoded_pen = masked_mean(
@@ -399,8 +449,8 @@ def content_aligned_flow_loss(
         point_mask,
     )
     decoded_curvature = curvature_loss(
-        decoded[..., :2],
-        target_points[..., :2],
+        decoded[..., 0:2],
+        target_points[..., 0:2],
         point_mask,
     )
     semantic = decoded.new_tensor(0.0)
@@ -421,6 +471,7 @@ def content_aligned_flow_loss(
         + duration_loss_weight * duration
         + endpoint_latent_weight * endpoint_latent
         + decoded_xy_weight * decoded_xy
+        + decoded_jump_weight * decoded_jump
         + decoded_path_weight * decoded_path
         + decoded_pen_weight * decoded_pen
         + decoded_curvature_weight * decoded_curvature
@@ -432,6 +483,7 @@ def content_aligned_flow_loss(
         "duration": float(duration.detach().cpu()),
         "endpoint_latent": float(endpoint_latent.detach().cpu()),
         "decoded_xy": float(decoded_xy.detach().cpu()),
+        "decoded_jump": float(decoded_jump.detach().cpu()),
         "decoded_path": float(decoded_path.detach().cpu()),
         "decoded_pen": float(decoded_pen.detach().cpu()),
         "decoded_curvature": float(decoded_curvature.detach().cpu()),
