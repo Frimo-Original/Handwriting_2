@@ -42,8 +42,8 @@ kl_weight = 0.0
 pen_weight = 0.35
 curvature_weight = 0.05
 render_weight = 0.0
-content_loss_weight = 0.15
-content_loss_every = 2
+content_loss_weight = 0.5
+content_loss_every = 1
 checkpoint_every = 40
 eval_every = 5
 

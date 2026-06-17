@@ -195,7 +195,7 @@ def build_alignment_cache(
     for split_name, loader in zip(("train", "val"), loaders, strict=True):
         for batch in tqdm(loader, desc=f"CTC align {split_name}", leave=False):
             batch = batch.to(device)
-            log_probs, output_lengths = recognizer(batch.points, batch.point_lengths)
+            log_probs, output_lengths = recognizer(batch.points[..., :3], batch.point_lengths)
             for row in range(batch.points.shape[0]):
                 sample_id = int(batch.sample_ids[row].item())
                 targets = content_tokens(
