@@ -24,6 +24,12 @@ class TransformTests(unittest.TestCase):
             dtype=np.float32,
         )
         deltas = points_to_deltas(points)
+        # The five-channel layout separates within-stroke deltas (cols 0/1) from
+        # cross-stroke jumps (cols 3/4) so they can be normalized independently
+        # without dropping the inter-stroke offset.
+        self.assertEqual(deltas.shape[1], 5)
+        self.assertTrue(np.allclose(deltas[3, 0:2], 0.0))
+        self.assertTrue(np.allclose(deltas[3, 3:5], np.asarray([5.0, -5.0])))
         restored = deltas_to_points(deltas)
         np.testing.assert_allclose(restored[:, :2], points[:, :2] - points[0, :2], atol=1e-5)
         np.testing.assert_array_equal(restored[:, 2], points[:, 2])

@@ -120,8 +120,20 @@ def evaluate_autoencoder(args: argparse.Namespace, config: ExperimentConfig, dev
         with torch.no_grad():
             reconstruction = model(points, lengths).reconstruction[0, : points.shape[1]].cpu().numpy()
         reconstruction[:, 2] = (1.0 / (1.0 + np.exp(-reconstruction[:, 2])) > args.pen_threshold).astype(np.float32)
-        original_points = deltas_to_points(item["points"].numpy(), mean=stats.mean, std=stats.std)
-        reconstructed_points = deltas_to_points(reconstruction, mean=stats.mean, std=stats.std)
+        original_points = deltas_to_points(
+            item["points"].numpy(),
+            within_mean=stats.mean,
+            within_std=stats.std,
+            jump_mean=stats.jump_mean,
+            jump_std=stats.jump_std,
+        )
+        reconstructed_points = deltas_to_points(
+            reconstruction,
+            within_mean=stats.mean,
+            within_std=stats.std,
+            jump_mean=stats.jump_mean,
+            jump_std=stats.jump_std,
+        )
         text = decode_tokens(item["text"].numpy().tolist())
         sample_prefix = f"sample_{int(item['sample_id']):04d}"
         render_points_to_image(original_points).save(out_dir / f"{sample_prefix}_original.png")
@@ -169,7 +181,13 @@ def evaluate_generator(args: argparse.Namespace, config: ExperimentConfig, devic
 
     for item in selected_items(config, stats, args.split, args.count):
         text = decode_tokens(item["text"].numpy().tolist())
-        original_points = deltas_to_points(item["points"].numpy(), mean=stats.mean, std=stats.std)
+        original_points = deltas_to_points(
+            item["points"].numpy(),
+            within_mean=stats.mean,
+            within_std=stats.std,
+            jump_mean=stats.jump_mean,
+            jump_std=stats.jump_std,
+        )
         latent_length = None
         if not args.use_predicted_length:
             if generator_model_type == "trajectory_generator":
@@ -229,7 +247,7 @@ def evaluate_recognizer(
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            log_probs, output_lengths = model(batch.points, batch.point_lengths)
+            log_probs, output_lengths = model(batch.points[..., :3], batch.point_lengths)
             loss = recognizer_ctc_loss(
                 log_probs,
                 output_lengths,

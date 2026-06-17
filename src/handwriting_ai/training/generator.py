@@ -76,6 +76,7 @@ def _loss_kwargs(config: ExperimentConfig) -> dict[str, float]:
         "decoded_pen_weight": generator.decoded_pen_weight,
         "decoded_pen_pos_weight": generator.decoded_pen_pos_weight,
         "decoded_curvature_weight": generator.decoded_curvature_weight,
+        "decoded_jump_weight": generator.decoded_jump_weight,
     }
 
 

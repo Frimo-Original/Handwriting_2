@@ -80,7 +80,7 @@ class DatasetTests(unittest.TestCase):
             )
             train_loader, _, _ = build_dataloaders(data, hardware)
             batch = next(iter(train_loader))
-            self.assertEqual(batch.points.shape[-1], 3)
+            self.assertEqual(batch.points.shape[-1], 5)
 
 
 if __name__ == "__main__":

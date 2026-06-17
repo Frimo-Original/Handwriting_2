@@ -31,7 +31,7 @@ from handwriting_ai.training.losses import (
 def _model_kwargs(config: ExperimentConfig) -> dict[str, int | float]:
     ae = config.autoencoder
     return {
-        "input_dim": 3,
+        "input_dim": 5,
         "hidden_dim": ae.hidden_dim,
         "latent_dim": ae.latent_dim,
         "downsample_factor": ae.downsample_factor,
@@ -115,6 +115,7 @@ def train_autoencoder(
                     pen_weight=config.autoencoder.pen_weight,
                     curvature_weight=config.autoencoder.curvature_weight,
                     render_weight=config.autoencoder.render_weight,
+                    jump_weight=config.autoencoder.jump_weight,
                 )
                 use_content_loss = step % max(config.autoencoder.content_loss_every, 1) == 0
                 content = output.reconstruction.new_tensor(0.0)
@@ -205,6 +206,7 @@ def evaluate_autoencoder(
             pen_weight=config.autoencoder.pen_weight,
             curvature_weight=config.autoencoder.curvature_weight,
             render_weight=0.0,
+            jump_weight=config.autoencoder.jump_weight,
         )
         content = semantic_ctc_loss(
             recognizer,

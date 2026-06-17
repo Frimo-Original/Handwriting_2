@@ -61,6 +61,7 @@ class AutoencoderConfig:
     local_kernel_size: int = 9
     content_loss_weight: float = 0.15
     content_loss_every: int = 2
+    jump_weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ class GeneratorConfig:
     semantic_every: int = 4
     eval_samples: int = 12
     eval_flow_steps: int = 16
+    decoded_jump_weight: float = 1.0
 
 
 @dataclass(frozen=True)
