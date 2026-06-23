@@ -110,6 +110,34 @@ class RecognizerConfig:
 
 
 @dataclass(frozen=True)
+class TrajectoryGeneratorConfig:
+    hidden_dim: int = 256
+    text_dim: int = 192
+    layers: int = 8
+    n_heads: int = 8
+    dropout: float = 0.10
+    learning_rate: float = 0.0003
+    weight_decay: float = 0.00001
+    epochs: int = 200
+    grad_accum_steps: int = 8
+    max_grad_norm: float = 1.0
+    checkpoint_every: int = 40
+    eval_every: int = 5
+    eval_samples: int = 12
+    augment_targets: bool = False
+    xy_weight: float = 1.0
+    jump_weight: float = 1.0
+    path_weight: float = 0.5
+    pen_weight: float = 1.0
+    pen_pos_weight: float = 8.0
+    curvature_weight: float = 0.05
+    length_loss_weight: float = 0.10
+    semantic_weight: float = 0.20
+    semantic_every: int = 1
+    temperature: float = 0.0
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     run: RunConfig
     hardware: HardwareConfig
@@ -117,6 +145,7 @@ class ExperimentConfig:
     autoencoder: AutoencoderConfig
     generator: GeneratorConfig
     recognizer: RecognizerConfig
+    trajectory_generator: TrajectoryGeneratorConfig = TrajectoryGeneratorConfig()
 
 
 def _section(raw: dict[str, Any], name: str) -> dict[str, Any]:
@@ -141,6 +170,12 @@ def load_config(path: str | Path) -> ExperimentConfig:
     autoencoder = _section(raw, "autoencoder")
     generator = _section(raw, "generator")
     recognizer = _section(raw, "recognizer")
+    trajectory_generator_raw = raw.get("trajectory_generator")
+    trajectory_generator = (
+        TrajectoryGeneratorConfig(**trajectory_generator_raw)
+        if isinstance(trajectory_generator_raw, dict)
+        else TrajectoryGeneratorConfig()
+    )
 
     return ExperimentConfig(
         run=RunConfig(
@@ -180,4 +215,5 @@ def load_config(path: str | Path) -> ExperimentConfig:
         autoencoder=AutoencoderConfig(**autoencoder),
         generator=GeneratorConfig(**generator),
         recognizer=RecognizerConfig(**recognizer),
+        trajectory_generator=trajectory_generator,
     )

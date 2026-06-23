@@ -53,10 +53,13 @@ class ResidualConvBlock(nn.Module):
 class TrajectoryGenerator(nn.Module):
     """Direct text-to-trajectory generator with monotonic text alignment.
 
-    The model predicts normalized `(dx, dy, pen_up_logit)` point sequences
-    directly. It avoids point-wise Transformer self-attention, so training cost
-    scales linearly with trajectory length and remains practical for long lines.
+    The model predicts normalized five-channel point sequences
+    ``(dx, dy, pen_up_logit, dx_jump, dy_jump)`` directly. It avoids point-wise
+    Transformer self-attention, so training cost scales linearly with trajectory
+    length and remains practical for long lines.
     """
+
+    OUTPUT_CHANNELS = 5
 
     def __init__(
         self,
@@ -91,7 +94,7 @@ class TrajectoryGenerator(nn.Module):
             [ResidualConvBlock(hidden_dim, kernel_size=7, dropout=dropout) for _ in range(layers)]
         )
         self.norm = nn.LayerNorm(hidden_dim)
-        self.output_head = nn.Linear(hidden_dim, 3)
+        self.output_head = nn.Linear(hidden_dim, self.OUTPUT_CHANNELS)
         self.length_head = nn.Sequential(
             nn.LayerNorm(text_dim),
             nn.Linear(text_dim, text_dim),
@@ -195,7 +198,10 @@ class TrajectoryGenerator(nn.Module):
             output = self(text, text_mask, point_lengths=lengths, max_point_length=max_length)
         deltas = output.deltas
         if temperature > 0.0:
-            noise = torch.randn_like(deltas[..., :2]) * (0.01 * temperature)
-            deltas = torch.cat([deltas[..., :2] + noise, deltas[..., 2:3]], dim=-1)
+            within_noise = torch.randn_like(deltas[..., 0:2]) * (0.01 * temperature)
+            channels = [deltas[..., 0:2] + within_noise, deltas[..., 2:3]]
+            if deltas.shape[-1] >= 5:
+                channels.append(deltas[..., 3:5])
+            deltas = torch.cat(channels, dim=-1)
             deltas = deltas * output.point_mask.unsqueeze(-1)
         return deltas, output.point_mask

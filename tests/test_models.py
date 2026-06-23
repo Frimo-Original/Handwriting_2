@@ -354,12 +354,16 @@ class ModelTests(unittest.TestCase):
             n_heads=4,
             dropout=0.0,
         )
-        points = torch.randn(2, 64, 3)
+        points = torch.randn(2, 64, 5)
         points[..., 2] = (points[..., 2] > 0).float()
         point_lengths = torch.tensor([64, 48], dtype=torch.long)
         point_mask = torch.arange(64).unsqueeze(0) < point_lengths.unsqueeze(1)
         text = torch.tensor([[10, 11, 12, 89], [13, 14, 89, 90]], dtype=torch.long)
         text_mask = text != 90
+        recognizer = TrajectoryRecognizer(hidden_dim=32, layers=1, dropout=0.0)
+        for parameter in recognizer.parameters():
+            parameter.requires_grad_(False)
+        text_lengths = torch.tensor([3, 2], dtype=torch.long)
         loss, metrics = trajectory_generator_loss(
             model,
             points,
@@ -373,11 +377,18 @@ class ModelTests(unittest.TestCase):
             pen_weight=0.5,
             pen_pos_weight=4.0,
             curvature_weight=0.1,
+            jump_weight=1.0,
+            recognizer=recognizer,
+            text_lengths=text_lengths,
+            semantic_weight=0.1,
+            blank_id=90,
         )
         loss.backward()
         self.assertIn("path", metrics)
+        self.assertIn("jump", metrics)
+        self.assertIn("semantic", metrics)
         sampled, sampled_mask = model.sample(text, text_mask, point_length=32)
-        self.assertEqual(sampled.shape, (2, 32, 3))
+        self.assertEqual(sampled.shape, (2, 32, 5))
         self.assertEqual(sampled_mask.shape, (2, 32))
 
     def test_inference_with_temporary_checkpoints(self) -> None:

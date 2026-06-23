@@ -605,14 +605,25 @@ def trajectory_generator_loss(
     std_weight: float = 0.0,
     bbox_weight: float = 0.0,
     pen_dice_weight: float = 0.0,
+    jump_weight: float = 1.0,
+    recognizer: nn.Module | None = None,
+    text_lengths: torch.Tensor | None = None,
+    semantic_weight: float = 0.0,
+    blank_id: int = 0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     output = model(text, text_mask, point_lengths=point_lengths)
     pred = output.deltas
     xy = masked_mean(
-        F.smooth_l1_loss(pred[..., :2], points[..., :2], reduction="none"),
+        F.smooth_l1_loss(pred[..., 0:2], points[..., 0:2], reduction="none"),
         point_mask,
     )
-    path = cumulative_xy_loss(pred[..., :2], points[..., :2], point_mask)
+    jump = pred.new_tensor(0.0)
+    if pred.shape[-1] >= 5 and points.shape[-1] >= 5:
+        jump = masked_mean(
+            F.smooth_l1_loss(pred[..., 3:5], points[..., 3:5], reduction="none"),
+            point_mask,
+        )
+    path = cumulative_xy_loss(combined_xy(pred), combined_xy(points), point_mask)
     pos_weight = pred.new_tensor(float(pen_pos_weight))
     pen = masked_mean(
         F.binary_cross_entropy_with_logits(
@@ -623,19 +634,19 @@ def trajectory_generator_loss(
         ),
         point_mask,
     )
-    curve = curvature_loss(pred[..., :2], points[..., :2], point_mask)
+    curve = curvature_loss(pred[..., 0:2], points[..., 0:2], point_mask)
     render = (
         pen_aware_render_loss(pred, points, point_mask)
         if render_weight > 0.0
         else pred.new_tensor(0.0)
     )
     delta_std = (
-        per_sample_delta_std_loss(pred[..., :2], points[..., :2], point_mask)
+        per_sample_delta_std_loss(pred[..., 0:2], points[..., 0:2], point_mask)
         if std_weight > 0.0
         else pred.new_tensor(0.0)
     )
     bbox = (
-        path_bbox_loss(pred[..., :2], points[..., :2], point_mask)
+        path_bbox_loss(pred[..., 0:2], points[..., 0:2], point_mask)
         if bbox_weight > 0.0
         else pred.new_tensor(0.0)
     )
@@ -644,10 +655,23 @@ def trajectory_generator_loss(
         if pen_dice_weight > 0.0
         else pred.new_tensor(0.0)
     )
+    semantic = pred.new_tensor(0.0)
+    if semantic_weight > 0.0:
+        if recognizer is None or text_lengths is None:
+            raise ValueError("semantic_weight > 0 requires recognizer and text_lengths")
+        semantic = semantic_ctc_loss(
+            recognizer,
+            pred,
+            point_lengths,
+            text,
+            text_lengths,
+            blank_id=blank_id,
+        )
     length_target = torch.log1p(point_lengths.float())
     length = F.mse_loss(output.length_log, length_target)
     loss = (
         xy_weight * xy
+        + jump_weight * jump
         + path_weight * path
         + pen_weight * pen
         + curvature_weight * curve
@@ -655,11 +679,13 @@ def trajectory_generator_loss(
         + std_weight * delta_std
         + bbox_weight * bbox
         + pen_dice_weight * pen_dice
+        + semantic_weight * semantic
         + length_loss_weight * length
     )
     return loss, {
         "loss": float(loss.detach().cpu()),
         "xy": float(xy.detach().cpu()),
+        "jump": float(jump.detach().cpu()),
         "path": float(path.detach().cpu()),
         "pen": float(pen.detach().cpu()),
         "curvature": float(curve.detach().cpu()),
@@ -667,6 +693,7 @@ def trajectory_generator_loss(
         "std": float(delta_std.detach().cpu()),
         "bbox": float(bbox.detach().cpu()),
         "pen_dice": float(pen_dice.detach().cpu()),
+        "semantic": float(semantic.detach().cpu()),
         "length": float(length.detach().cpu()),
     }
 
