@@ -46,6 +46,9 @@ def default_generator_checkpoint(config: ExperimentConfig, selection: str = "bes
         "last": "last.pt",
         "train_best": "train_best.pt",
     }
+    trajectory_path = config.run.out_dir / "trajectory_generator" / filenames[selection]
+    if trajectory_path.exists():
+        return trajectory_path
     return config.run.out_dir / "generator" / filenames[selection]
 
 

@@ -17,6 +17,7 @@ from handwriting_ai.generator_checkpoint import is_current_generator_payload
 from handwriting_ai.training.autoencoder import train_autoencoder
 from handwriting_ai.training.generator import train_generator
 from handwriting_ai.training.recognizer import train_recognizer
+from handwriting_ai.training.trajectory_generator import train_trajectory_generator
 
 
 PROFILES = {
@@ -100,7 +101,7 @@ def run_training(args: argparse.Namespace) -> None:
     print(f"Config:  {config_path}")
     print(f"Output:  {config.run.out_dir}")
 
-    if args.stage in {"audit", "all", "autoencoder", "generator", "recognizer"}:
+    if args.stage in {"audit", "all", "autoencoder", "generator", "recognizer", "trajectory_generator"}:
         print_dataset_summary(config)
 
     if args.stage == "audit":
@@ -161,6 +162,16 @@ def run_training(args: argparse.Namespace) -> None:
                 recognizer_checkpoint,
             )
 
+    if args.stage == "trajectory_generator":
+        if recognizer_checkpoint is None:
+            recognizer_checkpoint = default_recognizer_checkpoint(config)
+        require_checkpoint(recognizer_checkpoint, purpose="Recognizer")
+        trajectory_path = config.run.out_dir / "trajectory_generator" / "best.pt"
+        if args.skip_existing and trajectory_path.exists():
+            print(f"Trajectory generator already exists, skipping: {trajectory_path}")
+        else:
+            train_trajectory_generator(config, recognizer_checkpoint)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -182,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stage",
-        choices=["audit", "autoencoder", "generator", "recognizer", "all"],
+        choices=["audit", "autoencoder", "generator", "recognizer", "trajectory_generator", "all"],
         default="recognizer",
         help="Training stage to run.",
     )

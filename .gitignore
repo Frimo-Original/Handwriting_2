@@ -6,7 +6,3 @@ __pycache__/
 .venv
 .idea
 
-runs/
-outputs/
-checkpoints/
-
